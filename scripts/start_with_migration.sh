@@ -8,7 +8,6 @@ run_migration() {
     while [ $count -lt $retries ]; do
         echo "$(date): Running alembic migration. Attempt $((count+1)) of $retries."
         alembic upgrade head
-        alembic -c app/core/modules/event_collector/alembic.ini upgrade head
         if [ $? -eq 0 ]; then
             echo "$(date): Migrations applied successfully."
             return 0
