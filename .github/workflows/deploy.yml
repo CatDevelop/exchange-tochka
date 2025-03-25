@@ -1,0 +1,31 @@
+name: CI/CD Pipeline for Python Tochka
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up SSH
+      uses: webfactory/ssh-agent@v0.5.3
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY_CATDEV }}
+
+    - name: Deploy to Server
+      run: |
+        ssh -o StrictHostKeyChecking=no -p 2324 ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST_CATDEV }} '
+          cd exchange-tochka &&
+          eval $(ssh-agent -s) &&
+          echo "${{ secrets.SSH_PASSPHRASE }}" | SSH_ASKPASS=/bin/cat ssh-add ~/.ssh/id_rsa_github &&
+          git pull &&
+          sudo docker build -t backend-python-tochka .
+          docker run -d --name backend-python-tochka -p 9003:8000 backend-python-tochka
+          sudo docker system prune -af
+        '
