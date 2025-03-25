@@ -27,7 +27,7 @@ jobs:
           git pull &&
         
           # Удаляем старый контейнер, если он существует
-          if [ $(docker ps -aq -f name=backend-python-tochka) ]; then
+          if [ $(sudo docker ps -aq -f name=backend-python-tochka) ]; then
             sudo docker rm -f backend-python-tochka;
           fi &&
         
