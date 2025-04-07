@@ -15,6 +15,7 @@ class CRUDUser(CRUDBase[User]):
             async_session: AsyncSession | None = None,
     ) -> User:
         new_user = self.model(
+            id=uuid.uuid4(),
             name=name,
             role=UserRole.USER,
             api_key=f"key-{uuid.uuid4()}",
