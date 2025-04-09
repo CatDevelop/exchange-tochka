@@ -59,8 +59,8 @@ async def delete_instrument(
         await instrument_crud.delete_instrument(instrument.ticker, session)
         return OkResponse()
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException as e:
-        raise e
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception:
         raise HTTPException(status_code=500, detail='Internal server error')
