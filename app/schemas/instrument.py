@@ -1,17 +1,19 @@
-from pydantic import BaseModel
+from app.schemas.base import TickerBase
 
 
-class InstrumentResponse(BaseModel):
-    ticker: str
+class InstrumentResponse(TickerBase):
     name: str
 
     class Config:
         from_attributes = True
 
 
-class InstrumentCreate(BaseModel):
-    ticker: str
+class InstrumentCreate(TickerBase):
     name: str
 
     class Config:
         from_attributes = True
+
+
+class InstrumentDelete(TickerBase):
+    pass

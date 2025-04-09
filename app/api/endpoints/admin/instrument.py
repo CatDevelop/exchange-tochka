@@ -4,7 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth.current_user import is_user_admin
 from app.core.db import get_async_session
 from app.crud.v1.instrument import instrument_crud
-from app.schemas.instrument import InstrumentCreate, InstrumentResponse
+from app.schemas.base import OkResponse
+from app.schemas.instrument import (
+    InstrumentCreate,
+    InstrumentDelete,
+    InstrumentResponse,
+)
 
 router = APIRouter(prefix='', tags=['instrument', 'admin'])
 
@@ -22,14 +27,40 @@ router = APIRouter(prefix='', tags=['instrument', 'admin'])
     tags=['admin'],
 )
 async def add_instrument(
-    obj_in: InstrumentCreate, session: AsyncSession = Depends(get_async_session)
+    instrument: InstrumentCreate, session: AsyncSession = Depends(get_async_session)
 ):
     try:
-        instrument = await instrument_crud.create_instrument(obj_in, session)
-        return instrument
+        return await instrument_crud.create_instrument(instrument, session)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except HTTPException as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail='Internal server error')
+
+
+@router.delete(
+    '/admin/instrument/{ticker}',
+    response_model=OkResponse,
+    summary='Удалить инструмент',
+    dependencies=[Depends(is_user_admin)],
+    responses={
+        404: {'description': 'Инструмент не найден'},
+        422: {'description': 'Ошибка валидации данных'},
+        500: {'description': 'Внутренняя ошибка сервера'},
+    },
+    tags=['admin'],
+)
+async def delete_instrument(
+    ticker: str, session: AsyncSession = Depends(get_async_session)
+):
+    try:
+        instrument = InstrumentDelete(ticker=ticker)
+        await instrument_crud.delete_instrument(instrument.ticker, session)
+        return OkResponse()
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException as e:
+        raise e
     except Exception:
         raise HTTPException(status_code=500, detail='Internal server error')
