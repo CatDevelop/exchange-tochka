@@ -1,70 +1,67 @@
 from decimal import Decimal
-from sqlalchemy import select, update, and_
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError, DataError
-import uuid
+from typing import Dict
 
-from app.models.balance import Balance
+from sqlalchemy import and_, select, update
+from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.enums import CurrencyTicker
-from app.crud.base import CRUDBase
 from app.core.logs.logs import error_log
+from app.crud.base import CRUDBase
+from app.models.balance import Balance
 
 
 class CRUDBalance(CRUDBase[Balance]):
     @error_log
-    async def get_user_balance(
+    async def get_user_ticker_balance(
         self,
-        user_id: uuid.UUID,
+        user_id: int,
         ticker: CurrencyTicker,
         async_session: AsyncSession | None = None,
     ) -> Decimal:
-        """Получает баланс пользователя по тикеру валюты."""
         result = await async_session.execute(
-            select(self.model.amount)
-            .where(
-                and_(
-                    self.model.user_id == user_id,
-                    self.model.ticker == ticker
-                )
+            select(self.model.amount).where(
+                and_(self.model.user_id == user_id, self.model.ticker == ticker)
             )
         )
         balance = result.scalar_one_or_none()
-        return balance or Decimal("0.0")
+        return balance or Decimal('0.0')
+
+    @error_log
+    async def get_user_balances(
+        self,
+        user_id: int,
+        async_session: AsyncSession,
+    ) -> Dict[str, int]:
+        result = await async_session.execute(
+            select(self.model.ticker, self.model.amount).where(
+                self.model.user_id == user_id
+            )
+        )
+        return {ticker: int(amount) for ticker, amount in result.all()}
 
     @error_log
     async def deposit(
         self,
-        user_id: uuid.UUID,
+        user_id: int,
         ticker: CurrencyTicker,
         amount: Decimal,
         async_session: AsyncSession,
     ) -> Balance:
-        """Пополняет баланс пользователя."""
         if amount <= Decimal('0'):
-            raise ValueError("Сумма пополнения должна быть положительной")
+            raise ValueError('Сумма пополнения должна быть положительной')
 
         try:
-            # Пытаемся обновить существующую запись
             result = await async_session.execute(
                 update(self.model)
-                .where(
-                    and_(
-                        self.model.user_id == user_id,
-                        self.model.ticker == ticker
-                    )
-                )
+                .where(and_(self.model.user_id == user_id, self.model.ticker == ticker))
                 .values(amount=self.model.amount + amount)
                 .returning(self.model)
             )
             balance = result.scalar_one_or_none()
 
             if not balance:
-                # Если записи нет - создаем новую
-                balance = self.model(
-                    user_id=user_id,
-                    ticker=ticker,
-                    amount=amount
-                )
+                balance = self.model(user_id=user_id, ticker=ticker, amount=amount)
                 async_session.add(balance)
                 await async_session.flush()
 
@@ -74,39 +71,33 @@ class CRUDBalance(CRUDBase[Balance]):
         except IntegrityError as e:
             await async_session.rollback()
             if 'positive_balance' in str(e):
-                raise ValueError("Итоговый баланс не может быть отрицательным")
-            raise ValueError("Ошибка при пополнении баланса")
+                raise ValueError('Итоговый баланс не может быть отрицательным')
+            raise ValueError('Ошибка при пополнении баланса')
         except DataError:
             await async_session.rollback()
-            raise ValueError("Некорректная сумма")
+            raise ValueError('Некорректная сумма')
 
     @error_log
     async def withdraw(
         self,
-        user_id: uuid.UUID,
+        user_id: int,
         ticker: CurrencyTicker,
         amount: Decimal,
         async_session: AsyncSession | None = None,
     ) -> Balance:
-        """Списывает средства с баланса пользователя."""
         if amount <= Decimal('0'):
-            raise ValueError("Сумма списания должна быть положительной")
+            raise ValueError('Сумма списания должна быть положительной')
 
         try:
-            # Проверяем достаточность средств
-            current_balance = await self.get_user_balance(user_id, ticker, async_session)
+            current_balance = await self.get_user_ticker_balance(
+                user_id, ticker, async_session
+            )
             if current_balance < amount:
-                raise ValueError("Недостаточно средств на балансе")
+                raise ValueError('Недостаточно средств на балансе')
 
-            # Выполняем списание
             result = await async_session.execute(
                 update(self.model)
-                .where(
-                    and_(
-                        self.model.user_id == user_id,
-                        self.model.ticker == ticker
-                    )
-                )
+                .where(and_(self.model.user_id == user_id, self.model.ticker == ticker))
                 .values(amount=self.model.amount - amount)
                 .returning(self.model)
             )
@@ -118,11 +109,11 @@ class CRUDBalance(CRUDBase[Balance]):
         except IntegrityError as e:
             await async_session.rollback()
             if 'positive_balance' in str(e):
-                raise ValueError("Итоговый баланс не может быть отрицательным")
-            raise ValueError("Ошибка при списании средств")
+                raise ValueError('Итоговый баланс не может быть отрицательным')
+            raise ValueError('Ошибка при списании средств')
         except DataError:
             await async_session.rollback()
-            raise ValueError("Некорректная сумма")
+            raise ValueError('Некорректная сумма')
 
 
 balance_crud = CRUDBalance(Balance)

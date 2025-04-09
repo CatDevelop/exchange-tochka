@@ -1,5 +1,8 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OkResponse(BaseModel):
-    success: bool = Field(True, const=True)
+    success: Literal[True] = Field(default=True)
+    model_config = ConfigDict(from_attributes=True)

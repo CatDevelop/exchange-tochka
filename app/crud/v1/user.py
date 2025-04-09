@@ -1,5 +1,4 @@
 import uuid
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,16 +9,12 @@ from app.models.user import User
 
 class CRUDUser(CRUDBase[User]):
     async def add_user(
-            self,
-            name: str = '',
-            async_session: AsyncSession | None = None,
+        self,
+        name: str = '',
+        async_session: AsyncSession | None = None,
     ) -> User:
         new_user = self.model(
-            id=uuid.uuid4(),
-            name=name,
-            role=UserRole.USER,
-            api_key=f"key-{uuid.uuid4()}",
-            balance=Decimal("0.0")
+            name=name, role=UserRole.USER, api_key=f"key-{uuid.uuid4()}"
         )
         async_session.add(new_user)
         await async_session.flush()

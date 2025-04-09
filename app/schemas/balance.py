@@ -1,24 +1,21 @@
-import uuid
 from decimal import Decimal
 
-from pydantic.v1 import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
-class BalanceOperationBase(BaseModel):
-    user_id: uuid.UUID = Field(..., description="UUID пользователя")
-    ticker: str = Field(..., description="Тикер валюты")
-    amount: Decimal = Field(..., gt=0, description="Сумма операции (должна быть больше 0)")
-
-    @validator('amount')
-    def validate_amount(cls, v):
-        if v <= Decimal('0'):
-            raise ValueError("Сумма должна быть положительной")
-        return v
+class DepositRequest(BaseModel):
+    user_id: int = Field(..., description='UUID пользователя')
+    ticker: str = Field(..., description='Тикер валюты')
+    amount: Decimal = Field(..., gt=0, description='Сумма пополнения (должна быть > 0)')
+    model_config = ConfigDict(from_attributes=True)
 
 
-class DepositRequest(BalanceOperationBase):
-    pass
+class WithdrawRequest(BaseModel):
+    user_id: int = Field(..., description='UUID пользователя')
+    ticker: str = Field(..., description='Тикер валюты')
+    amount: Decimal = Field(..., gt=0, description='Сумма списания (должна быть > 0)')
+    model_config = ConfigDict(from_attributes=True)
 
 
-class WithdrawRequest(BalanceOperationBase):
+class BalanceResponse(RootModel[dict[str, int]]):
     pass
