@@ -14,7 +14,7 @@ class CRUDInstrument(CRUDBase[Instrument]):
     @error_log
     async def get_all(self, async_session: AsyncSession) -> list[InstrumentResponse]:
         """Получает все существующие инструменты"""
-        instruments = self.get_multi(async_session)
+        instruments = await self.get_multi(async_session)
         return [
             InstrumentResponse.model_validate(instrument) for instrument in instruments
         ]
@@ -31,6 +31,10 @@ class CRUDInstrument(CRUDBase[Instrument]):
             raise ValueError(f'Instrument {obj_in.ticker} already exists')
 
         instrument = await self.create(obj_in, async_session)
+        await async_session.flush()
+        await async_session.refresh(instrument)
+        await async_session.commit()
+
         return InstrumentResponse.model_validate(instrument)
 
     @error_log
@@ -44,6 +48,8 @@ class CRUDInstrument(CRUDBase[Instrument]):
         if not instrument:
             raise ValueError(f"Instrument {ticker} not found")
         await self.delete(instrument, async_session)
+        await async_session.flush()
+        await async_session.commit()
 
 
 instrument_crud = CRUDInstrument(Instrument)
