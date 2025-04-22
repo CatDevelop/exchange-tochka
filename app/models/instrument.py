@@ -6,7 +6,7 @@ from app.core.db import Base
 class Instrument(Base):
     Base.__tablename__ = 'instrument'
 
-    ticker: Mapped[str] = mapped_column(nullable=False, unique=True, index=True)
+    ticker: Mapped[str] = mapped_column(nullable=False, unique=True, primary_key=True)
     name: Mapped[str] = mapped_column(nullable=False)
 
     def __repr__(self):
