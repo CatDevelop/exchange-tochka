@@ -27,9 +27,7 @@ class CRUDInstrument(CRUDBase[Instrument]):
         self, obj_in: InstrumentCreate, async_session: AsyncSession
     ) -> InstrumentResponse:
         """Создает новый инструмент"""
-        existing_instrument = await self.get_by_attribute(
-            'ticker', obj_in.ticker, async_session
-        )
+        existing_instrument = await self.get(obj_in.ticker, async_session)
         if existing_instrument:
             raise ValueError(f'Instrument {obj_in.ticker} already exists')
 

@@ -18,6 +18,18 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         self.model = model
         self.primary_key_name = primary_key_name
 
+    def get_primary_key_value(self, db_obj: SQLAlchemyModel) -> Any:
+        """Извлекает значение первичного ключа из объекта.
+
+        Args:
+            db_obj (SQLAlchemyModel): Объект, из которого нужно извлечь значение
+            первичного ключа.
+
+        Returns:
+            Any: Значение первичного ключа.
+        """
+        return getattr(db_obj, self.primary_key_name)
+
     @error_log
     async def get(
         self,
@@ -122,10 +134,9 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         async_session.add(db_obj)
         await async_session.flush()
         await async_session.refresh(db_obj)
-        primary_key_value = getattr(db_obj, self.primary_key_name)
         info_logger.info(
             f"Create new obj: {self.model.__name__}"
-            f" with {self.primary_key_name}: {primary_key_value}"
+            f" with {self.primary_key_name}: {self.get_primary_key_value(db_obj)}"
         )
         return db_obj
 
@@ -155,10 +166,9 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         async_session.add(db_obj)
         await async_session.flush()
         await async_session.refresh(db_obj)
-        primary_key_value = getattr(db_obj, self.primary_key_name)
         info_logger.info(
-            f"Update obj: {self.model.__name__} "
-            f"with {self.primary_key_name}: {primary_key_value}"
+            f"Update obj: {self.model.__name__}"
+            f" with {self.primary_key_name}: {self.get_primary_key_value(db_obj)}"
         )
         return db_obj
 
@@ -176,10 +186,10 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         """
         await async_session.delete(db_obj)
         await async_session.flush()
-        primary_key_value = getattr(db_obj, self.primary_key_name)
         info_logger.info(
             f"Successfully remove obj:"
-            f" {self.model.__name__} with {self.primary_key_name}: {primary_key_value}"
+            f" {self.model.__name__} with {self.primary_key_name}: "
+            f"{self.get_primary_key_value(db_obj)}"
         )
 
     async def get_by_attribute(
