@@ -1,14 +1,14 @@
 import re
 from typing import AsyncGenerator
 
-from sqlalchemy import BigInteger, Identity, MetaData
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
+from sqlalchemy.orm import DeclarativeBase, declared_attr
 
 from app.core.config import settings
 
@@ -34,8 +34,6 @@ class Base(AsyncAttrs, DeclarativeBase):
         name = name.lstrip('_')
         name = re.sub(r'_{2,}', '_', name)
         return name
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
 
 
 engine = create_async_engine(settings.db.url)
