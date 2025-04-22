@@ -11,6 +11,9 @@ from app.schemas.instrument import (
 
 
 class CRUDInstrument(CRUDBase[Instrument]):
+    def __init__(self):
+        super().__init__(Instrument, primary_key_name='ticker')
+
     @error_log
     async def get_all(self, async_session: AsyncSession) -> list[InstrumentResponse]:
         """Получает все существующие инструменты"""
@@ -52,4 +55,4 @@ class CRUDInstrument(CRUDBase[Instrument]):
         await async_session.commit()
 
 
-instrument_crud = CRUDInstrument(Instrument)
+instrument_crud = CRUDInstrument()

@@ -9,16 +9,19 @@ from app.models.user import User
 
 
 class CRUDUser(CRUDBase[User]):
+    def __init__(self):
+        super().__init__(User, primary_key_name='id')
+
     async def add_user(
-            self,
-            name: str = '',
-            async_session: AsyncSession | None = None,
+        self,
+        name: str = '',
+        async_session: AsyncSession | None = None,
     ) -> User:
         new_user = self.model(
             name=name,
             role=UserRole.USER,
             api_key=f"key-{uuid.uuid4()}",
-            balance=Decimal("0.0")
+            balance=Decimal('0.0'),
         )
         async_session.add(new_user)
         await async_session.flush()
@@ -27,4 +30,4 @@ class CRUDUser(CRUDBase[User]):
         return new_user
 
 
-user_crud = CRUDUser(User)
+user_crud = CRUDUser()
