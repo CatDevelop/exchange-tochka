@@ -11,7 +11,7 @@ from app.schemas.instrument import (
     InstrumentResponse,
 )
 
-router = APIRouter(prefix='', tags=['instrument', 'admin'])
+router = APIRouter(prefix='', tags=['admin'])
 
 
 @router.post(
@@ -24,7 +24,6 @@ router = APIRouter(prefix='', tags=['instrument', 'admin'])
         422: {'description': 'Ошибка валидации данных'},
         500: {'description': 'Внутренняя ошибка сервера'},
     },
-    tags=['admin'],
 )
 async def add_instrument(
     instrument: InstrumentCreate, session: AsyncSession = Depends(get_async_session)
@@ -49,7 +48,6 @@ async def add_instrument(
         422: {'description': 'Ошибка валидации данных'},
         500: {'description': 'Внутренняя ошибка сервера'},
     },
-    tags=['admin'],
 )
 async def delete_instrument(
     ticker: str, session: AsyncSession = Depends(get_async_session)

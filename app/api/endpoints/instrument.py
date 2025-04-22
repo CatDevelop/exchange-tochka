@@ -7,14 +7,13 @@ from app.core.db import get_async_session
 from app.crud.v1.instrument import instrument_crud
 from app.schemas.instrument import InstrumentResponse
 
-router = APIRouter(prefix='', tags=['instrument'])
+router = APIRouter(prefix='', tags=['public'])
 
 
 @router.get(
     '/public/instrument',
     response_model=List[InstrumentResponse],
     summary='Список доступных инструментов',
-    tags=['public'],
     responses={500: {'description': 'Внутренняя ошибка сервера'}},
 )
 async def list_instruments(session: AsyncSession = Depends(get_async_session)):
