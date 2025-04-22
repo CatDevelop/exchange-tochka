@@ -43,9 +43,7 @@ class CRUDInstrument(CRUDBase[Instrument]):
         self, ticker: InstrumentDelete, async_session: AsyncSession
     ) -> None:
         """Удаляет существующий инструмент"""
-        instrument = await instrument_crud.get_by_attribute(
-            'ticker', ticker, async_session
-        )
+        instrument = await instrument_crud.get(ticker, async_session)
         if not instrument:
             raise ValueError(f"Instrument {ticker} not found")
         await self.delete(instrument, async_session)
