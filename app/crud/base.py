@@ -14,6 +14,20 @@ SQLAlchemyModel = TypeVar('SQLAlchemyModel', bound=Base)
 
 
 class CRUDBase(Generic[SQLAlchemyModel]):
+    """При наследовании от базового класса нужно указывать в квадратных скобках модель
+    с которой будет работать новый класс, и которая будет хранится в `self.model`.
+    Example:
+    ```
+    # Наследование будет не таким
+    class CRUDUser(CRUDBase):
+        ...
+    # а таким:
+    class CRUDUser(CRUDBase[User]):
+        def __init__(self):
+        super().__init__(User, primary_key_name='{pk_name}}')
+    ```
+    """
+
     def __init__(self, model: Type[SQLAlchemyModel], primary_key_name: str) -> None:
         self.model = model
         self.primary_key_name = primary_key_name
