@@ -1,8 +1,8 @@
 """add balance
 
-Revision ID: 002fbd1d4e22
-Revises: a8a53aa419ce
-Create Date: 2025-04-09 21:20:45.003070
+Revision ID: 84f62df89879
+Revises: b41aa5df2710
+Create Date: 2025-04-28 21:26:09.763082
 
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '002fbd1d4e22'
-down_revision: Union[str, None] = 'a8a53aa419ce'
+revision: str = '84f62df89879'
+down_revision: Union[str, None] = 'b41aa5df2710'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -24,14 +24,18 @@ def upgrade() -> None:
     op.create_table(
         'balance',
         sa.Column('user_id', sa.BigInteger(), nullable=False),
-        sa.Column('ticker', sa.String(length=10), nullable=False),
+        sa.Column('ticker', sa.String(), nullable=False),
         sa.Column('amount', sa.Numeric(precision=20, scale=10), nullable=True),
         sa.CheckConstraint('amount >= 0', name=op.f('ck_balance_positive_balance')),
+        sa.ForeignKeyConstraint(
+            ['ticker'], ['instrument.ticker'], name=op.f('fk_balance_ticker_instrument')
+        ),
         sa.ForeignKeyConstraint(
             ['user_id'], ['user.id'], name=op.f('fk_balance_user_id_user')
         ),
         sa.PrimaryKeyConstraint('user_id', 'ticker', name=op.f('pk_balance')),
     )
+    op.create_unique_constraint(op.f('uq_instrument_ticker'), 'instrument', ['ticker'])
     op.drop_column('user', 'balance')
     # ### end Alembic commands ###
 
@@ -41,5 +45,6 @@ def downgrade() -> None:
     op.add_column(
         'user', sa.Column('balance', sa.NUMERIC(), autoincrement=False, nullable=False)
     )
+    op.drop_constraint(op.f('uq_instrument_ticker'), 'instrument', type_='unique')
     op.drop_table('balance')
     # ### end Alembic commands ###

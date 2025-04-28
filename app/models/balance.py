@@ -22,7 +22,9 @@ class Balance(Base):
     user_id = Column(
         BigInteger, ForeignKey('user.id'), nullable=False, primary_key=True
     )
-    ticker = Column(String(10), nullable=False, primary_key=True)
+    ticker = Column(
+        String, ForeignKey('instrument.ticker'), nullable=False, primary_key=True
+    )
     amount = Column(Numeric(20, 10), default=Decimal('0.0'))
 
     def __repr__(self):

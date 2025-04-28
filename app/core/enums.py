@@ -1,10 +1,6 @@
-from enum import Enum, StrEnum, auto
+from enum import StrEnum, auto
 
 
 class UserRole(StrEnum):
     ADMIN = auto()
     USER = auto()
-
-
-class CurrencyTicker(str, Enum):
-    RUB = 'RUB'

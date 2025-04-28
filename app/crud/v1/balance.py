@@ -5,18 +5,20 @@ from sqlalchemy import and_, select, update
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import CurrencyTicker
 from app.core.logs.logs import error_log
 from app.crud.base import CRUDBase
 from app.models.balance import Balance
 
 
 class CRUDBalance(CRUDBase[Balance]):
+    def __init__(self):
+        super().__init__(Balance, primary_key_name='pk_balance')
+
     @error_log
     async def get_user_ticker_balance(
         self,
         user_id: int,
-        ticker: CurrencyTicker,
+        ticker: str,
         async_session: AsyncSession | None = None,
     ) -> Decimal:
         result = await async_session.execute(
@@ -44,7 +46,7 @@ class CRUDBalance(CRUDBase[Balance]):
     async def deposit(
         self,
         user_id: int,
-        ticker: CurrencyTicker,
+        ticker: str,
         amount: Decimal,
         async_session: AsyncSession,
     ) -> Balance:
@@ -81,7 +83,7 @@ class CRUDBalance(CRUDBase[Balance]):
     async def withdraw(
         self,
         user_id: int,
-        ticker: CurrencyTicker,
+        ticker: str,
         amount: Decimal,
         async_session: AsyncSession | None = None,
     ) -> Balance:
@@ -116,4 +118,4 @@ class CRUDBalance(CRUDBase[Balance]):
             raise ValueError('Некорректная сумма')
 
 
-balance_crud = CRUDBalance(Balance)
+balance_crud = CRUDBalance()
