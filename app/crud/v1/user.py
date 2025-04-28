@@ -8,6 +8,9 @@ from app.models.user import User
 
 
 class CRUDUser(CRUDBase[User]):
+    def __init__(self):
+        super().__init__(User, primary_key_name='id')
+
     async def add_user(
         self,
         name: str = '',
@@ -33,4 +36,4 @@ class CRUDUser(CRUDBase[User]):
         return user
 
 
-user_crud = CRUDUser(User)
+user_crud = CRUDUser()
