@@ -10,3 +10,4 @@ class User(Base):
     name: Mapped[str] = mapped_column(nullable=False)
     role: Mapped[UserRole] = mapped_column(nullable=False, default=UserRole.USER)
     api_key: Mapped[str] = mapped_column(nullable=False, unique=True)
+    is_deleted: Mapped[bool] = mapped_column(default=False, nullable=True)

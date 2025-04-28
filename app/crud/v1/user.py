@@ -1,5 +1,6 @@
 import uuid
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import UserRole
@@ -25,14 +26,19 @@ class CRUDUser(CRUDBase[User]):
         await async_session.commit()
         return new_user
 
-    async def get(self, user_id: int, async_session: AsyncSession | None = None):
-        return await async_session.get(self.model, user_id)
+    async def get_by_id(self, user_id: int, async_session: AsyncSession | None = None):
+        return await self.get(user_id, async_session)
 
     async def remove(self, user_id: int, async_session: AsyncSession | None = None):
-        user = await self.get(user_id)
-        if user:
-            await async_session.delete(user)
-            await async_session.commit()
+        user = await self.get_by_id(user_id, async_session)
+        if not user or user.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+            )
+        user.is_deleted = True
+        await async_session.flush()
+        await async_session.refresh(user)
+        await async_session.commit()
         return user
 
 
