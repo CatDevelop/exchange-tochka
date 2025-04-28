@@ -22,5 +22,15 @@ class CRUDUser(CRUDBase[User]):
         await async_session.commit()
         return new_user
 
+    async def get(self, user_id: int, async_session: AsyncSession | None = None):
+        return await async_session.get(self.model, user_id)
+
+    async def remove(self, user_id: int, async_session: AsyncSession | None = None):
+        user = await self.get(user_id)
+        if user:
+            await async_session.delete(user)
+            await async_session.commit()
+        return user
+
 
 user_crud = CRUDUser(User)
