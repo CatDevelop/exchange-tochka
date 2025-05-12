@@ -16,39 +16,57 @@ SQLAlchemyModel = TypeVar('SQLAlchemyModel', bound=Base)
 class CRUDBase(Generic[SQLAlchemyModel]):
     """При наследовании от базового класса нужно указывать в квадратных скобках модель
     с которой будет работать новый класс, и которая будет хранится в `self.model`.
-
     Example:
     ```
     # Наследование будет не таким
     class CRUDUser(CRUDBase):
+        ...
     # а таким:
     class CRUDUser(CRUDBase[User]):
+        def __init__(self):
+        super().__init__(User, primary_key_name='{pk_name}}')
     ```
     """
 
-    def __init__(self, model: Type[SQLAlchemyModel]) -> None:
+    def __init__(self, model: Type[SQLAlchemyModel], primary_key_name: str) -> None:
         self.model = model
+        self.primary_key_name = primary_key_name
+
+    def get_primary_key_value(self, db_obj: SQLAlchemyModel) -> Any:
+        """Извлекает значение первичного ключа из объекта.
+
+        Args:
+            db_obj (SQLAlchemyModel): Объект, из которого нужно извлечь значение
+            первичного ключа.
+
+        Returns:
+            Any: Значение первичного ключа.
+        """
+        return getattr(db_obj, self.primary_key_name)
 
     @error_log
     async def get(
         self,
-        obj_id: int,
+        primary_key_value: Any,
         async_session: AsyncSession,
     ) -> SQLAlchemyModel | None:
-        """Получает один элемент по его id.
+        """Получает один элемент по его первичному ключу.
 
         Args:
-            obj_id (int): ИД объекта
+            primary_key_value (Any): ИД объекта
             async_session (AsyncSession): Асинхронная сессия
 
         Returns:
             SQLAlchemyModel | None: Найденный объект или None, если объект не найден
         """
         db_obj = await async_session.execute(
-            select(self.model).where(self.model.id == obj_id)
+            select(self.model).where(
+                getattr(self.model, self.primary_key_name) == primary_key_value
+            )
         )
         info_logger.info(
-            f"Get successfully object: {self.model.__name__}" f" with id: {obj_id}"
+            f"Get successfully object: {self.model.__name__}"
+            f" with {self.primary_key_name}: {primary_key_value}"
         )
         return db_obj.scalars().first()
 
@@ -130,12 +148,10 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         async_session.add(db_obj)
         await async_session.flush()
         await async_session.refresh(db_obj)
-        if hasattr(self.model, 'id'):
-            info_logger.info(
-                f"Create new obj: {self.model.__name__}" f" with id: {db_obj.id}"
-            )
-        else:
-            info_logger.info(f"Create new obj: {self.model.__name__}")
+        info_logger.info(
+            f"Create new obj: {self.model.__name__}"
+            f" with {self.primary_key_name}: {self.get_primary_key_value(db_obj)}"
+        )
         return db_obj
 
     @error_log
@@ -164,12 +180,10 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         async_session.add(db_obj)
         await async_session.flush()
         await async_session.refresh(db_obj)
-        if hasattr(self.model, 'id'):
-            info_logger.info(
-                f"Update obj: {self.model.__name__}" f" with id: {db_obj.id}"
-            )
-        else:
-            info_logger.info(f"Update obj: {self.model.__name__}")
+        info_logger.info(
+            f"Update obj: {self.model.__name__}"
+            f" with {self.primary_key_name}: {self.get_primary_key_value(db_obj)}"
+        )
         return db_obj
 
     @error_log
@@ -186,13 +200,11 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         """
         await async_session.delete(db_obj)
         await async_session.flush()
-        if hasattr(self.model, 'id'):
-            info_logger.info(
-                f"Successfully remove obj:"
-                f" {self.model.__name__} with id: {db_obj.id}"
-            )
-        else:
-            info_logger.info(f"Successfully remove obj: {self.model.__name__}")
+        info_logger.info(
+            f"Successfully remove obj:"
+            f" {self.model.__name__} with {self.primary_key_name}: "
+            f"{self.get_primary_key_value(db_obj)}"
+        )
 
     async def get_by_attribute(
         self,
@@ -200,7 +212,7 @@ class CRUDBase(Generic[SQLAlchemyModel]):
         attr_value: Any,
         async_session: AsyncSession,
     ) -> SQLAlchemyModel | None:
-        """Получает объект по атрибуту
+        """Получает объект по атрибуту.
 
         Args:
             attr_name (str): Имя аттрибута, по которому будет происходить поиск

@@ -25,12 +25,12 @@ jobs:
           eval $(ssh-agent -s) &&
           echo "${{ secrets.SSH_PASSPHRASE }}" | SSH_ASKPASS=/bin/cat ssh-add ~/.ssh/id_rsa_github &&
           git pull &&
-        
+
           # Удаляем старый контейнер, если он существует
           if [ $(sudo docker ps -aq -f name=backend-python-tochka) ]; then
             sudo docker rm -f backend-python-tochka;
           fi &&
-        
+
           sudo docker build -t backend-python-tochka . &&
           sudo docker run -d --name backend-python-tochka -p 9003:8000 backend-python-tochka &&
           sudo docker system prune -af
