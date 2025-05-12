@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 from sqlalchemy import BigInteger, Identity
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,4 +10,4 @@ class User(Base):
     name: Mapped[str] = mapped_column(nullable=False)
     role: Mapped[UserRole] = mapped_column(nullable=False, default=UserRole.USER)
     api_key: Mapped[str] = mapped_column(nullable=False, unique=True)
-    balance: Mapped[Decimal] = mapped_column(nullable=False, default=Decimal('0.0'))
+    is_deleted: Mapped[bool] = mapped_column(default=False, nullable=True)
