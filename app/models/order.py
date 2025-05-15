@@ -1,9 +1,11 @@
 import enum
+import datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, String, Integer, Enum, ForeignKey
+from sqlalchemy import Column, String, Integer, Enum, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import validates
+from sqlalchemy.sql import functions
 
 from app.core.db import Base
 
@@ -38,6 +40,7 @@ class Order(Base):
     qty = Column(Integer, nullable=False)
     price = Column(Integer, nullable=True)
     filled = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=functions.now(), nullable=False)
 
     @validates("price")
     def validate_non_negative(self, key, value):

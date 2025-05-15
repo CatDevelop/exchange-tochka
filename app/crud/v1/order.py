@@ -35,6 +35,16 @@ class CRUDOrder(CRUDBase[Order]):
         spent_money = 0
         earned_money = 0
 
+        # Всегда начинаем с блокировки балансов перед любыми операциями
+        if is_limit:
+            # Предварительная блокировка строк баланса с FOR UPDATE
+            if direction == OrderDirection.BUY and price is not None:
+                # Блокируем запись баланса RUB
+                await self._lock_balance_row(user_id, "RUB", session)
+            elif direction == OrderDirection.SELL:
+                # Блокируем запись баланса тикера
+                await self._lock_balance_row(user_id, ticker, session)
+
         if direction == OrderDirection.BUY:
             # Пытаемся сопоставить с заявками на продажу
             matched_orders = await self._match_sell_orders(ticker, qty, price, session)
@@ -65,7 +75,7 @@ class CRUDOrder(CRUDBase[Order]):
                     # Блокируем средства для оставшейся части заявки
                     remaining_cost = (qty - filled) * price
                     await self._block_funds(user_id, remaining_cost, "RUB", session)
-                    
+                
                 status = (
                     OrderStatus.EXECUTED if filled == qty
                     else OrderStatus.PARTIALLY_EXECUTED if filled > 0
@@ -123,7 +133,18 @@ class CRUDOrder(CRUDBase[Order]):
         await session.commit()
         return new_order
 
+    async def _lock_balance_row(self, user_id: str, ticker: str, session: AsyncSession):
+        """Блокирует строку баланса для предотвращения deadlock"""
+        error_log(f"Блокировка строки баланса: user_id={user_id}, ticker={ticker}")
+        # SELECT ... FOR UPDATE гарантирует эксклюзивную блокировку строки
+        await session.execute(
+            select(Balance)
+            .where(Balance.user_id == user_id, Balance.ticker == ticker)
+            .with_for_update()
+        )
+
     async def _match_sell_orders(self, ticker: str, qty: int, price: int | None, session: AsyncSession) -> dict:
+        # Сначала получаем все подходящие ордера
         query = select(Order).where(
             Order.ticker == ticker,
             Order.direction == OrderDirection.SELL,
@@ -133,6 +154,9 @@ class CRUDOrder(CRUDBase[Order]):
         if price is not None:
             query = query.where(Order.price <= price)
 
+        # Используем FOR UPDATE SKIP LOCKED для избежания deadlock
+        query = query.with_for_update(skip_locked=True)
+
         result = await session.execute(query)
         sell_orders = result.scalars().all()
 
@@ -140,6 +164,10 @@ class CRUDOrder(CRUDBase[Order]):
         spent_money = 0
 
         for sell_order in sell_orders:
+            # Блокируем баланс продавца для обновления
+            await self._lock_balance_row(sell_order.user_id, "RUB", session)
+            await self._lock_balance_row(sell_order.user_id, ticker, session)
+
             remaining = sell_order.qty - (sell_order.filled or 0)
             to_fill = min(qty - filled_qty, remaining)
 
@@ -184,6 +212,7 @@ class CRUDOrder(CRUDBase[Order]):
         return {"filled_qty": filled_qty, "spent_money": spent_money}
 
     async def _match_buy_orders(self, ticker: str, qty: int, price: int | None, session: AsyncSession) -> dict:
+        # Сначала получаем все подходящие ордера
         query = select(Order).where(
             Order.ticker == ticker,
             Order.direction == OrderDirection.BUY,
@@ -193,6 +222,9 @@ class CRUDOrder(CRUDBase[Order]):
         if price is not None:
             query = query.where(Order.price >= price)
 
+        # Используем FOR UPDATE SKIP LOCKED для избежания deadlock
+        query = query.with_for_update(skip_locked=True)
+
         result = await session.execute(query)
         buy_orders = result.scalars().all()
 
@@ -200,6 +232,10 @@ class CRUDOrder(CRUDBase[Order]):
         earned_money = 0
 
         for buy_order in buy_orders:
+            # Блокируем баланс покупателя для обновления
+            await self._lock_balance_row(buy_order.user_id, "RUB", session)
+            await self._lock_balance_row(buy_order.user_id, ticker, session)
+
             remaining = buy_order.qty - (buy_order.filled or 0)
             to_fill = min(qty - filled_qty, remaining)
 
@@ -353,9 +389,9 @@ class CRUDOrder(CRUDBase[Order]):
         session: AsyncSession,
     ) -> Order:
         """Обновление статуса заявки с разблокировкой средств при необходимости"""
-        # Получаем заявку
+        # Получаем заявку с блокировкой
         result = await session.execute(
-            select(Order).where(Order.id == order_id)
+            select(Order).where(Order.id == order_id).with_for_update()
         )
         order = result.scalar_one_or_none()
         
@@ -379,6 +415,9 @@ class CRUDOrder(CRUDBase[Order]):
                 # Разблокируем деньги у покупателя
                 remaining_qty = order.qty - (order.filled or 0)
                 if remaining_qty > 0 and order.price is not None:
+                    # Сначала блокируем строку баланса для обновления
+                    await self._lock_balance_row(order.user_id, "RUB", session)
+                    
                     remaining_cost = remaining_qty * order.price
                     try:
                         await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
@@ -390,6 +429,9 @@ class CRUDOrder(CRUDBase[Order]):
                 # Разблокируем активы у продавца
                 remaining_qty = order.qty - (order.filled or 0)
                 if remaining_qty > 0:
+                    # Сначала блокируем строку баланса для обновления
+                    await self._lock_balance_row(order.user_id, order.ticker, session)
+                    
                     try:
                         await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
                         error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
@@ -410,5 +452,39 @@ class CRUDOrder(CRUDBase[Order]):
             select(Order).where(Order.id == id)
         )
         return result.scalar_one_or_none()
+
+    @error_log
+    async def get_user_orders(
+        self,
+        user_id: str,
+        session: AsyncSession,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Order]:
+        """Получение списка заявок пользователя"""
+        result = await session.execute(
+            select(Order)
+            .where(Order.user_id == user_id)
+            .order_by(Order.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return result.scalars().all()
+
+    @error_log
+    async def get_all_orders(
+        self,
+        session: AsyncSession,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Order]:
+        """Получение списка всех заявок"""
+        result = await session.execute(
+            select(Order)
+            .order_by(Order.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return result.scalars().all()
 
 order_crud = CRUDOrder()

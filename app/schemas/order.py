@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Optional, List, Union
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.order import OrderDirection
+from app.models.order import OrderDirection, OrderStatus
 
 
 class LimitOrderBody(BaseModel):
@@ -46,3 +47,19 @@ class OrderResponse(BaseModel):
 class CancelOrderResponse(BaseModel):
     success: bool
     order_id: str
+
+
+class OrderBodyResponse(BaseModel):
+    direction: OrderDirection
+    ticker: str
+    qty: int
+    price: Optional[int] = None
+
+
+class OrderDetailResponse(BaseModel):
+    id: str
+    status: OrderStatus
+    user_id: str
+    timestamp: datetime
+    body: OrderBodyResponse
+    filled: int = 0
