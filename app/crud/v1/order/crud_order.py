@@ -35,32 +35,61 @@ class CRUDOrder(CRUDOrderBase):
     ) -> Order:
         """Создание нового ордера с учетом сопоставления с существующими ордерами"""
         order_id = str(uuid4())
-        is_limit = body.price is not None
+        price = getattr(body, 'price', None)
+        is_limit = price is not None
         direction = body.direction
         ticker = body.ticker
         qty = body.qty
-        price = getattr(body, 'price', None)
-
+    
         filled = 0
         spent_money = 0
         earned_money = 0
         
-        # Сначала блокируем Order-таблицу заранее, чтобы предотвратить deadlock
-        # Создаем пустой ордер со статусом PENDING, чтобы зарезервировать ID в таблице заказов
-        pending_order = Order(
-            id=order_id,
-            status=OrderStatus.NEW,  # Временный статус
-            user_id=user_id,
-            direction=direction,
-            ticker=ticker,
-            qty=qty,
-            price=price,
-            filled=0,
-        )
-        session.add(pending_order)
-        await session.flush()  # Фиксируем в БД, но без коммита
+        # Сначала проверяем достаточность баланса без блокировки
+        # Если баланса не хватает, создадим ордер со статусом CANCELLED
+        insufficient_balance = False
+        balance_error_message = ""
         
-        # Теперь блокируем балансы в строго определенном порядке
+        if direction == OrderDirection.BUY and is_limit:
+            # Для покупки проверяем достаточно ли RUB
+            required_amount = qty * price
+            available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
+            if available_rub < required_amount:
+                insufficient_balance = True
+                balance_error_message = f"Недостаточно средств для ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB"
+                error_log(balance_error_message)
+        
+        elif direction == OrderDirection.SELL:
+            # Для продажи проверяем достаточно ли актива
+            available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
+            if available_asset < qty:
+                insufficient_balance = True
+                balance_error_message = f"Недостаточно средств для ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}"
+                error_log(balance_error_message)
+        
+        # Если баланса не хватает, создаем ордер со статусом CANCELLED без блокировки балансов
+        if insufficient_balance:
+            cancelled_order = Order(
+                id=order_id,
+                status=OrderStatus.CANCELLED,
+                user_id=user_id,
+                direction=direction,
+                ticker=ticker,
+                qty=qty,
+                price=price,
+                filled=0,
+            )
+            session.add(cancelled_order)
+            try:
+                await session.commit()
+                return cancelled_order
+            except Exception as e:
+                error_log(f"Ошибка при создании отмененного ордера: {str(e)}")
+                await session.rollback()
+                raise ValueError(f"Ошибка при создании отмененного ордера: {str(e)}")
+        
+        # Если баланса достаточно, продолжаем обычный процесс
+        # Блокируем балансы в строго определенном порядке
         try:
             # Блокируем баланс RUB
             await lock_balance_row(user_id, "RUB", session)
@@ -70,30 +99,39 @@ class CRUDOrder(CRUDOrderBase):
                 await lock_balance_row(user_id, ticker, session)
         except Exception as e:
             error_log(f"Ошибка при блокировке балансов: {str(e)}")
-            # Откатываем создание ордера при ошибке
-            pending_order.status = OrderStatus.CANCELLED
-            await session.commit()
-            raise ValueError(f"Не удалось заблокировать балансы: {str(e)}")
+            # В случае ошибки блокировки тоже создаем CANCELLED ордер
+            cancelled_order = Order(
+                id=order_id,
+                status=OrderStatus.CANCELLED,
+                user_id=user_id,
+                direction=direction,
+                ticker=ticker,
+                qty=qty,
+                price=price,
+                filled=0,
+            )
+            session.add(cancelled_order)
+            try:
+                await session.commit()
+                return cancelled_order
+            except Exception as commit_err:
+                error_log(f"Ошибка при создании отмененного ордера: {str(commit_err)}")
+                await session.rollback()
+                raise ValueError(f"Ошибка при создании отмененного ордера: {str(commit_err)}")
 
-        # Проверка достаточности баланса перед созданием ордера
-        if direction == OrderDirection.BUY and is_limit:
-            # Для покупки проверяем достаточно ли RUB
-            required_amount = qty * price
-            available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
-            if available_rub < required_amount:
-                # Отменяем ордер при недостаточном балансе
-                pending_order.status = OrderStatus.CANCELLED
-                await session.commit()
-                raise ValueError(f"Недостаточно средств для создания ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB")
-        
-        elif direction == OrderDirection.SELL:
-            # Для продажи проверяем достаточно ли актива
-            available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
-            if available_asset < qty:
-                # Отменяем ордер при недостаточном балансе
-                pending_order.status = OrderStatus.CANCELLED
-                await session.commit()
-                raise ValueError(f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}")
+        # Создаем ордер со статусом NEW
+        pending_order = Order(
+            id=order_id,
+            status=OrderStatus.NEW,
+            user_id=user_id,
+            direction=direction,
+            ticker=ticker,
+            qty=qty,
+            price=price,
+            filled=0,
+        )
+        session.add(pending_order)
+        await session.flush()  # Фиксируем в БД, но без коммита
 
         if direction == OrderDirection.BUY:
             # Пытаемся сопоставить с заявками на продажу
@@ -172,7 +210,13 @@ class CRUDOrder(CRUDOrderBase):
         pending_order.status = status
         pending_order.filled = filled
         
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception as e:
+            error_log(f"Ошибка при создании ордера: {str(e)}")
+            await session.rollback()
+            raise ValueError(f"Ошибка при создании ордера: {str(e)}")
+            
         return pending_order
 
     @error_log
@@ -244,7 +288,13 @@ class CRUDOrder(CRUDOrderBase):
                     except ValueError as e:
                         error_log(f"Ошибка при разблокировке активов: {str(e)}")
         
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception as e:
+            error_log(f"Ошибка при обновлении статуса ордера: {str(e)}")
+            await session.rollback()
+            raise ValueError(f"Ошибка при обновлении статуса ордера: {str(e)}")
+            
         return order
 
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100) -> dict:
