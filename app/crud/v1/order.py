@@ -34,9 +34,23 @@ class CRUDOrder(CRUDBase[Order]):
         filled = 0
         spent_money = 0
         earned_money = 0
-
-        # Блокируем балансы пользователя перед любыми операциями, в строго определенном порядке
-        # Всегда сначала блокируем RUB, потом другие тикеры - это предотвращает deadlock
+        
+        # Сначала блокируем Order-таблицу заранее, чтобы предотвратить deadlock
+        # Создаем пустой ордер со статусом PENDING, чтобы зарезервировать ID в таблице заказов
+        pending_order = Order(
+            id=order_id,
+            status=OrderStatus.NEW,  # Временный статус
+            user_id=user_id,
+            direction=direction,
+            ticker=ticker,
+            qty=qty,
+            price=price,
+            filled=0,
+        )
+        session.add(pending_order)
+        await session.flush()  # Фиксируем в БД, но без коммита
+        
+        # Теперь блокируем балансы в строго определенном порядке
         try:
             # Блокируем баланс RUB
             await self._lock_balance_row(user_id, "RUB", session)
@@ -46,6 +60,9 @@ class CRUDOrder(CRUDBase[Order]):
                 await self._lock_balance_row(user_id, ticker, session)
         except Exception as e:
             error_log(f"Ошибка при блокировке балансов: {str(e)}")
+            # Откатываем создание ордера при ошибке
+            pending_order.status = OrderStatus.CANCELLED
+            await session.commit()
             raise ValueError(f"Не удалось заблокировать балансы: {str(e)}")
 
         # Проверка достаточности баланса перед созданием ордера
@@ -54,12 +71,18 @@ class CRUDOrder(CRUDBase[Order]):
             required_amount = qty * price
             available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
             if available_rub < required_amount:
+                # Отменяем ордер при недостаточном балансе
+                pending_order.status = OrderStatus.CANCELLED
+                await session.commit()
                 raise ValueError(f"Недостаточно средств для создания ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB")
         
         elif direction == OrderDirection.SELL:
             # Для продажи проверяем достаточно ли актива
             available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
             if available_asset < qty:
+                # Отменяем ордер при недостаточном балансе
+                pending_order.status = OrderStatus.CANCELLED
+                await session.commit()
                 raise ValueError(f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}")
 
         if direction == OrderDirection.BUY:
@@ -135,20 +158,12 @@ class CRUDOrder(CRUDBase[Order]):
                     else OrderStatus.NEW
                 )
 
-        # Создаем запись в БД
-        new_order = Order(
-            id=order_id,
-            status=status,
-            user_id=user_id,
-            direction=direction,
-            ticker=ticker,
-            qty=qty,
-            price=price,
-            filled=filled,
-        )
-        session.add(new_order)
+        # Обновляем статус ордера
+        pending_order.status = status
+        pending_order.filled = filled
+        
         await session.commit()
-        return new_order
+        return pending_order
 
     async def _lock_balance_row(self, user_id: str, ticker: str, session: AsyncSession):
         """Блокирует строку баланса для предотвращения deadlock"""
@@ -410,12 +425,28 @@ class CRUDOrder(CRUDBase[Order]):
         session: AsyncSession,
     ) -> Order:
         """Обновление статуса заявки с разблокировкой средств при необходимости"""
-        # Получаем заявку с блокировкой
+        # Сначала блокируем балансы, потом ордер - это обеспечивает одинаковый порядок блокировок
+        # Получаем ордер, но без блокировки сначала, чтобы узнать user_id и ticker
+        result = await session.execute(
+            select(Order).where(Order.id == order_id)
+        )
+        order_info = result.scalar_one_or_none()
+        
+        if not order_info:
+            raise ValueError(f"Заявка с ID {order_id} не найдена")
+            
+        # Блокируем балансы в строго определенном порядке
+        await self._lock_balance_row(order_info.user_id, "RUB", session)
+        if order_info.ticker != "RUB":
+            await self._lock_balance_row(order_info.user_id, order_info.ticker, session)
+        
+        # Теперь блокируем сам ордер
         result = await session.execute(
             select(Order).where(Order.id == order_id).with_for_update()
         )
         order = result.scalar_one_or_none()
         
+        # Если ордер уже не существует
         if not order:
             raise ValueError(f"Заявка с ID {order_id} не найдена")
         
@@ -431,13 +462,7 @@ class CRUDOrder(CRUDBase[Order]):
         order.status = new_status
         
         # Если заявка отменяется или исполняется полностью, разблокируем средства
-        if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
-            # Блокируем балансы пользователя в строго определенном порядке
-            # Всегда сначала RUB, затем тикер - это предотвращает deadlock
-            await self._lock_balance_row(order.user_id, "RUB", session)
-            if order.ticker != "RUB":
-                await self._lock_balance_row(order.user_id, order.ticker, session)
-                
+        if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:                
             if order.direction == OrderDirection.BUY:
                 # Разблокируем деньги у покупателя
                 remaining_qty = order.qty - (order.filled or 0)
