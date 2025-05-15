@@ -35,6 +35,19 @@ class CRUDOrder(CRUDBase[Order]):
         spent_money = 0
         earned_money = 0
 
+        # Блокируем балансы пользователя перед любыми операциями, в строго определенном порядке
+        # Всегда сначала блокируем RUB, потом другие тикеры - это предотвращает deadlock
+        try:
+            # Блокируем баланс RUB
+            await self._lock_balance_row(user_id, "RUB", session)
+            
+            # Затем блокируем баланс тикера, если он отличается от RUB
+            if ticker != "RUB":
+                await self._lock_balance_row(user_id, ticker, session)
+        except Exception as e:
+            error_log(f"Ошибка при блокировке балансов: {str(e)}")
+            raise ValueError(f"Не удалось заблокировать балансы: {str(e)}")
+
         # Проверка достаточности баланса перед созданием ордера
         if direction == OrderDirection.BUY and is_limit:
             # Для покупки проверяем достаточно ли RUB
@@ -48,16 +61,6 @@ class CRUDOrder(CRUDBase[Order]):
             available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
             if available_asset < qty:
                 raise ValueError(f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}")
-
-        # Всегда начинаем с блокировки балансов перед любыми операциями
-        if is_limit:
-            # Предварительная блокировка строк баланса с FOR UPDATE
-            if direction == OrderDirection.BUY and price is not None:
-                # Блокируем запись баланса RUB
-                await self._lock_balance_row(user_id, "RUB", session)
-            elif direction == OrderDirection.SELL:
-                # Блокируем запись баланса тикера
-                await self._lock_balance_row(user_id, ticker, session)
 
         if direction == OrderDirection.BUY:
             # Пытаемся сопоставить с заявками на продажу
@@ -178,9 +181,11 @@ class CRUDOrder(CRUDBase[Order]):
         spent_money = 0
 
         for sell_order in sell_orders:
-            # Блокируем баланс продавца для обновления
+            # Блокируем балансы продавца в строго определенном порядке
+            # Всегда сначала RUB, затем тикер - это предотвращает deadlock
             await self._lock_balance_row(sell_order.user_id, "RUB", session)
-            await self._lock_balance_row(sell_order.user_id, ticker, session)
+            if ticker != "RUB":
+                await self._lock_balance_row(sell_order.user_id, ticker, session)
 
             remaining = sell_order.qty - (sell_order.filled or 0)
             to_fill = min(qty - filled_qty, remaining)
@@ -246,9 +251,11 @@ class CRUDOrder(CRUDBase[Order]):
         earned_money = 0
 
         for buy_order in buy_orders:
-            # Блокируем баланс покупателя для обновления
+            # Блокируем балансы покупателя в строго определенном порядке
+            # Всегда сначала RUB, затем тикер - это предотвращает deadlock
             await self._lock_balance_row(buy_order.user_id, "RUB", session)
-            await self._lock_balance_row(buy_order.user_id, ticker, session)
+            if ticker != "RUB":
+                await self._lock_balance_row(buy_order.user_id, ticker, session)
 
             remaining = buy_order.qty - (buy_order.filled or 0)
             to_fill = min(qty - filled_qty, remaining)
@@ -425,13 +432,16 @@ class CRUDOrder(CRUDBase[Order]):
         
         # Если заявка отменяется или исполняется полностью, разблокируем средства
         if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+            # Блокируем балансы пользователя в строго определенном порядке
+            # Всегда сначала RUB, затем тикер - это предотвращает deadlock
+            await self._lock_balance_row(order.user_id, "RUB", session)
+            if order.ticker != "RUB":
+                await self._lock_balance_row(order.user_id, order.ticker, session)
+                
             if order.direction == OrderDirection.BUY:
                 # Разблокируем деньги у покупателя
                 remaining_qty = order.qty - (order.filled or 0)
                 if remaining_qty > 0 and order.price is not None:
-                    # Сначала блокируем строку баланса для обновления
-                    await self._lock_balance_row(order.user_id, "RUB", session)
-                    
                     remaining_cost = remaining_qty * order.price
                     try:
                         await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
@@ -443,9 +453,6 @@ class CRUDOrder(CRUDBase[Order]):
                 # Разблокируем активы у продавца
                 remaining_qty = order.qty - (order.filled or 0)
                 if remaining_qty > 0:
-                    # Сначала блокируем строку баланса для обновления
-                    await self._lock_balance_row(order.user_id, order.ticker, session)
-                    
                     try:
                         await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
                         error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")

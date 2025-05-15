@@ -64,7 +64,7 @@ class CRUDBalance(CRUDBase[Balance]):
                 self.model.user_id == user_id
             )
         )
-        return {ticker: int(amount) for ticker, amount in result.all()}
+        return {ticker: int(amount) for ticker, amount, blocked_amount in result.all()}
 
     @error_log
     async def deposit(
