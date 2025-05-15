@@ -35,6 +35,20 @@ class CRUDOrder(CRUDBase[Order]):
         spent_money = 0
         earned_money = 0
 
+        # Проверка достаточности баланса перед созданием ордера
+        if direction == OrderDirection.BUY and is_limit:
+            # Для покупки проверяем достаточно ли RUB
+            required_amount = qty * price
+            available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
+            if available_rub < required_amount:
+                raise ValueError(f"Недостаточно средств для создания ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB")
+        
+        elif direction == OrderDirection.SELL:
+            # Для продажи проверяем достаточно ли актива
+            available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
+            if available_asset < qty:
+                raise ValueError(f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}")
+
         # Всегда начинаем с блокировки балансов перед любыми операциями
         if is_limit:
             # Предварительная блокировка строк баланса с FOR UPDATE

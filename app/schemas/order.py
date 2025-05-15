@@ -1,7 +1,7 @@
 from typing import Optional, List, Union
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.order import OrderDirection, OrderStatus
 
@@ -60,6 +60,6 @@ class OrderDetailResponse(BaseModel):
     id: str
     status: OrderStatus
     user_id: str
-    timestamp: datetime
+    timestamp: datetime = Field(..., description="Время создания заявки", json_schema_extra={"timezone_aware": False})
     body: OrderBodyResponse
     filled: int = 0
