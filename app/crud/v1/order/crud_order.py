@@ -46,47 +46,40 @@ class CRUDOrder(CRUDOrderBase):
         earned_money = 0
         
         # Сначала проверяем достаточность баланса без блокировки
-        # Если баланса не хватает, создадим ордер со статусом CANCELLED
-        insufficient_balance = False
-        balance_error_message = ""
-        
         if direction == OrderDirection.BUY and is_limit:
             # Для покупки проверяем достаточно ли RUB
             required_amount = qty * price
             available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
             if available_rub < required_amount:
-                insufficient_balance = True
-                balance_error_message = f"Недостаточно средств для ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB"
-                error_log(balance_error_message)
+                # Для покупки создаем ордер со статусом CANCELLED
+                cancelled_order = Order(
+                    id=order_id,
+                    status=OrderStatus.CANCELLED,
+                    user_id=user_id,
+                    direction=direction,
+                    ticker=ticker,
+                    qty=qty,
+                    price=price,
+                    filled=0,
+                )
+                session.add(cancelled_order)
+                try:
+                    await session.commit()
+                    error_log(f"Создан ордер со статусом CANCELLED из-за недостатка средств: {required_amount} RUB")
+                    return cancelled_order
+                except Exception as e:
+                    error_log(f"Ошибка при создании отмененного ордера: {str(e)}")
+                    await session.rollback()
+                    raise ValueError(f"Ошибка при создании отмененного ордера: {str(e)}")
         
         elif direction == OrderDirection.SELL:
             # Для продажи проверяем достаточно ли актива
             available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
             if available_asset < qty:
-                insufficient_balance = True
-                balance_error_message = f"Недостаточно средств для ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}"
-                error_log(balance_error_message)
-        
-        # Если баланса не хватает, создаем ордер со статусом CANCELLED без блокировки балансов
-        if insufficient_balance:
-            cancelled_order = Order(
-                id=order_id,
-                status=OrderStatus.CANCELLED,
-                user_id=user_id,
-                direction=direction,
-                ticker=ticker,
-                qty=qty,
-                price=price,
-                filled=0,
-            )
-            session.add(cancelled_order)
-            try:
-                await session.commit()
-                return cancelled_order
-            except Exception as e:
-                error_log(f"Ошибка при создании отмененного ордера: {str(e)}")
-                await session.rollback()
-                raise ValueError(f"Ошибка при создании отмененного ордера: {str(e)}")
+                # Для продажи бросаем исключение, как и ожидается в тестах
+                error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}"
+                error_log(error_msg)
+                raise ValueError(error_msg)
         
         # Если баланса достаточно, продолжаем обычный процесс
         # Блокируем балансы в строго определенном порядке
