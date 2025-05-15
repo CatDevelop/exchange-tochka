@@ -63,3 +63,13 @@ class OrderDetailResponse(BaseModel):
     timestamp: datetime = Field(..., description="Время создания заявки", json_schema_extra={"timezone_aware": False})
     body: OrderBodyResponse
     filled: int = 0
+
+
+class Level(BaseModel):
+    price: int = Field(..., description="Цена уровня")
+    qty: int = Field(..., description="Количество на данном уровне")
+
+
+class OrderbookResponse(BaseModel):
+    bid_levels: List[Level] = Field(default_factory=list, description="Уровни спроса (покупки)")
+    ask_levels: List[Level] = Field(default_factory=list, description="Уровни предложения (продажи)")
