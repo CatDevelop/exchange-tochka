@@ -222,7 +222,8 @@ class CRUDOrder(CRUDOrderBase):
         # Если заявка отменяется или исполняется полностью, разблокируем средства
         if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:                
             if order.direction == OrderDirection.BUY:
-                # Разблокируем деньги у покупателя
+                # Разблокируем деньги у покупателя только для лимитных ордеров
+                # Для рыночных ордеров price будет None
                 remaining_qty = order.qty - (order.filled or 0)
                 if remaining_qty > 0 and order.price is not None:
                     remaining_cost = remaining_qty * order.price
@@ -233,9 +234,10 @@ class CRUDOrder(CRUDOrderBase):
                         error_log(f"Ошибка при разблокировке средств: {str(e)}")
             
             elif order.direction == OrderDirection.SELL:
-                # Разблокируем активы у продавца
+                # Разблокируем активы у продавца только для лимитных ордеров
+                # Для рыночных ордеров нет заблокированных активов
                 remaining_qty = order.qty - (order.filled or 0)
-                if remaining_qty > 0:
+                if remaining_qty > 0 and order.price is not None:
                     try:
                         await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
                         error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
