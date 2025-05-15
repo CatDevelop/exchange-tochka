@@ -41,3 +41,8 @@ class MarketOrderBody(BaseModel):
 class OrderResponse(BaseModel):
     success: bool
     order_id: str
+
+
+class CancelOrderResponse(BaseModel):
+    success: bool
+    order_id: str

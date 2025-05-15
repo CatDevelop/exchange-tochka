@@ -20,9 +20,7 @@ router = APIRouter(prefix='', tags=['admin'])
     summary='Создать инструмент',
     dependencies=[Depends(is_user_admin)],
     responses={
-        409: {'description': 'Инструмент уже существует'},
-        422: {'description': 'Ошибка валидации данных'},
-        500: {'description': 'Внутренняя ошибка сервера'},
+        409: {'description': 'The instrument already exists'},
     },
 )
 async def add_instrument(

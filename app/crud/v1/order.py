@@ -63,8 +63,9 @@ class CRUDOrder(CRUDBase[Order]):
                 # Лимитная заявка
                 if filled < qty:
                     # Блокируем средства для оставшейся части заявки
-                    await self._block_funds(user_id, (qty - filled) * price, "RUB", session)
-                
+                    remaining_cost = (qty - filled) * price
+                    await self._block_funds(user_id, remaining_cost, "RUB", session)
+                    
                 status = (
                     OrderStatus.EXECUTED if filled == qty
                     else OrderStatus.PARTIALLY_EXECUTED if filled > 0
@@ -98,7 +99,8 @@ class CRUDOrder(CRUDBase[Order]):
                 # Лимитная заявка
                 if filled < qty:
                     # Блокируем активы для оставшейся части заявки
-                    await self._block_assets(user_id, qty - filled, ticker, session)
+                    remaining_qty = qty - filled
+                    await self._block_assets(user_id, remaining_qty, ticker, session)
                 
                 status = (
                     OrderStatus.EXECUTED if filled == qty
@@ -158,6 +160,15 @@ class CRUDOrder(CRUDBase[Order]):
             
             # Зачисляем деньги продавцу
             await self._add_funds(sell_order.user_id, order_cost, "RUB", session)
+            
+            # Разблокируем активы продавца, если это лимитная заявка
+            if sell_order.price is not None:
+                # Разблокировка активов
+                try:
+                    await balance_crud.unblock_assets(sell_order.user_id, ticker, to_fill, session)
+                    error_log(f"Разблокировано активов: {to_fill} {ticker} для пользователя {sell_order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке активов: {str(e)}")
 
             await self._create_transaction(
                 user_id=sell_order.user_id,
@@ -209,7 +220,16 @@ class CRUDOrder(CRUDBase[Order]):
             
             # Зачисляем актив покупателю
             await self._add_assets(buy_order.user_id, to_fill, ticker, session)
-
+            
+            # Разблокируем и списываем деньги у покупателя, если это лимитная заявка
+            if buy_order.price is not None:
+                # Разблокировка средств
+                try:
+                    await balance_crud.unblock_funds(buy_order.user_id, "RUB", order_cost, session)
+                    error_log(f"Разблокировано средств: {order_cost} RUB для пользователя {buy_order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке средств: {str(e)}")
+            
             await self._create_transaction(
                 user_id=buy_order.user_id,
                 ticker=ticker,
@@ -324,5 +344,71 @@ class CRUDOrder(CRUDBase[Order]):
             timestamp=datetime.utcnow(),
         )
         session.add(transaction)
+
+    @error_log
+    async def update_order_status(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        session: AsyncSession,
+    ) -> Order:
+        """Обновление статуса заявки с разблокировкой средств при необходимости"""
+        # Получаем заявку
+        result = await session.execute(
+            select(Order).where(Order.id == order_id)
+        )
+        order = result.scalar_one_or_none()
+        
+        if not order:
+            raise ValueError(f"Заявка с ID {order_id} не найдена")
+        
+        # Если статус не изменился, просто возвращаем заявку
+        if order.status == new_status:
+            return order
+        
+        # Если заявка уже отменена или исполнена, не позволяем менять статус
+        if order.status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+            raise ValueError(f"Нельзя изменить статус заявки в статусе {order.status}")
+        
+        old_status = order.status
+        order.status = new_status
+        
+        # Если заявка отменяется или исполняется полностью, разблокируем средства
+        if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+            if order.direction == OrderDirection.BUY:
+                # Разблокируем деньги у покупателя
+                remaining_qty = order.qty - (order.filled or 0)
+                if remaining_qty > 0 and order.price is not None:
+                    remaining_cost = remaining_qty * order.price
+                    try:
+                        await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
+                        error_log(f"Разблокировано средств: {remaining_cost} RUB для пользователя {order.user_id}")
+                    except ValueError as e:
+                        error_log(f"Ошибка при разблокировке средств: {str(e)}")
+            
+            elif order.direction == OrderDirection.SELL:
+                # Разблокируем активы у продавца
+                remaining_qty = order.qty - (order.filled or 0)
+                if remaining_qty > 0:
+                    try:
+                        await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
+                        error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
+                    except ValueError as e:
+                        error_log(f"Ошибка при разблокировке активов: {str(e)}")
+        
+        await session.commit()
+        return order
+
+    @error_log
+    async def get(
+        self,
+        id: str,
+        session: AsyncSession,
+    ) -> Order:
+        """Получение заявки по ID"""
+        result = await session.execute(
+            select(Order).where(Order.id == id)
+        )
+        return result.scalar_one_or_none()
 
 order_crud = CRUDOrder()

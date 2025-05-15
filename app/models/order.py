@@ -32,7 +32,7 @@ class Order(Base):
     direction = Column(Enum(OrderDirection), nullable=False)
     ticker = Column(
         String,
-        ForeignKey("instrument.ticker", ondelete="RESTRICT"),
+        ForeignKey("instrument.ticker", ondelete="CASCADE"),
         nullable=False,
     )
     qty = Column(Integer, nullable=False)
