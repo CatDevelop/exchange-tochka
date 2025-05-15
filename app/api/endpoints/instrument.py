@@ -14,7 +14,6 @@ router = APIRouter(prefix='', tags=['public'])
     '/public/instrument',
     response_model=List[InstrumentResponse],
     summary='Список доступных инструментов',
-    responses={500: {'description': 'Внутренняя ошибка сервера'}},
 )
 async def list_instruments(session: AsyncSession = Depends(get_async_session)):
     try:

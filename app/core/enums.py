@@ -1,6 +1,6 @@
-from enum import StrEnum, auto
+from enum import StrEnum
 
 
 class UserRole(StrEnum):
-    ADMIN = auto()
-    USER = auto()
+    ADMIN = "ADMIN"
+    USER = "USER"

@@ -1,14 +1,11 @@
-from decimal import Decimal
-
 from sqlalchemy import (
-    BigInteger,
     CheckConstraint,
     Column,
     ForeignKey,
-    Numeric,
     PrimaryKeyConstraint,
-    String,
+    String, Integer,
 )
+from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.db import Base
 
@@ -20,12 +17,12 @@ class Balance(Base):
     )
 
     user_id = Column(
-        BigInteger, ForeignKey('user.id'), nullable=False, primary_key=True
+        UUID(as_uuid=False), ForeignKey('user.id'), nullable=False, primary_key=True
     )
     ticker = Column(
         String, ForeignKey('instrument.ticker'), nullable=False, primary_key=True
     )
-    amount = Column(Numeric(20, 10), default=Decimal('0.0'))
+    amount = Column(Integer, default=0, nullable=False)
 
     def __repr__(self):
         return f"<Balance user_id={self.user_id} ticker={self.ticker}: {self.amount}>"

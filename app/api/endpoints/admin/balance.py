@@ -26,6 +26,7 @@ router = APIRouter()
         },
         401: {'description': 'Unauthorized'},
     },
+    tags=['balance'],
 )
 async def get_balances(
     current_user: User = Depends(get_current_user),
@@ -53,6 +54,7 @@ async def get_balances(
         422: {'description': 'Ошибка валидации данных'},
         500: {'description': 'Внутренняя ошибка сервера'},
     },
+    tags=['admin'],
 )
 async def deposit_to_balance(
     body: DepositRequest,
@@ -81,6 +83,7 @@ async def deposit_to_balance(
         422: {'description': 'Ошибка валидации данных'},
         500: {'description': 'Внутренняя ошибка сервера'},
     },
+    tags=['admin'],
 )
 async def withdraw_from_balance(
     body: WithdrawRequest,

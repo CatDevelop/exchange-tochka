@@ -9,7 +9,7 @@ from app.core.middleware.global_ import LoggingMiddleware
 app = FastAPI(
     default_response_class=ORJSONResponse,
     docs_url=None,
-    redoc_url=None,
+    redoc_url=None
 )
 
 add_cors_middleware(app)

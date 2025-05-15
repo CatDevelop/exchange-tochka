@@ -4,18 +4,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth.current_user import get_current_user
 from app.core.db import get_async_session
 from app.crud.v1.user import user_crud
-from app.schemas.user import UserRegister, UserResponse
+from app.schemas.user import NewUser, User
 
 router = APIRouter()
 
 
 @router.post('/public/register', summary='Регистрация пользователя', tags=['public'])
 async def register_user(
-    body: UserRegister,
+    body: NewUser,
     session: AsyncSession = Depends(get_async_session),
-) -> UserResponse:
+) -> User:
     user = await user_crud.add_user(body.name, session)
-    return UserResponse.model_validate(user)
+    return User.model_validate(user)
 
 
 @router.get(
@@ -23,6 +23,6 @@ async def register_user(
 )
 async def get_profile_user(
     current_user: AsyncSession = Depends(get_current_user),
-) -> UserResponse:
-    user = UserResponse.model_validate(current_user)
+) -> User:
+    user = User.model_validate(current_user)
     return user

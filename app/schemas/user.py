@@ -1,13 +1,14 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, constr
 
 from app.core.enums import UserRole
 
 
-class UserRegister(BaseModel):
-    name: str
+class NewUser(BaseModel):
+    name: constr(min_length=3)
 
 
-class UserResponse(BaseModel):
+class User(BaseModel):
+    id: str
     name: str
     role: UserRole
     api_key: str
