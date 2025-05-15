@@ -3,19 +3,20 @@ from typing import Union, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth.current_user import get_current_user, is_user_admin
+from app.core.auth.current_user import get_current_user
 from app.core.db import get_async_session
+from app.core.enums import UserRole
 from app.crud.v1.order import order_crud
+from app.models.order import OrderStatus
+from app.models.user import User
 from app.schemas.order import (
-    LimitOrderBody, 
-    MarketOrderBody, 
-    OrderResponse, 
-    CancelOrderResponse, 
+    LimitOrderBody,
+    MarketOrderBody,
+    OrderResponse,
+    CancelOrderResponse,
     OrderDetailResponse,
     OrderBodyResponse
 )
-from app.models.user import User
-from app.models.order import OrderStatus, OrderDirection
 
 router = APIRouter()
 
@@ -54,21 +55,26 @@ async def cancel_order(
     try:
         # Получаем заявку для проверки прав
         order = await order_crud.get(id=order_id, session=session)
-        
+
         if not order:
             raise ValueError('Заявка не найдена')
-        
-        # Проверяем, что пользователь является владельцем заявки
-        if order.user_id != current_user.id:
+
+        # Проверяем, что пользователь является владельцем заявки или администратором
+        is_admin = current_user.role == UserRole.ADMIN
+        if order.user_id != current_user.id and not is_admin:
             raise ValueError('Нет доступа к этой заявке')
-        
+
         # Отменяем заявку
         updated_order = await order_crud.update_order_status(
             order_id=order_id,
             new_status=OrderStatus.CANCELLED,
             session=session
         )
-        
+
+        # Логируем, кто отменил заявку
+        if is_admin and order.user_id != current_user.id:
+            error_log(f"Администратор {current_user.id} отменил заявку {order_id} пользователя {order.user_id}")
+
         return CancelOrderResponse(success=True, order_id=updated_order.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -94,7 +100,7 @@ async def get_all_orders(
             limit=limit,
             offset=offset
         )
-        
+
         orders = []
         for order in db_orders:
             # Создаем тело ордера в зависимости от наличия цены
@@ -104,7 +110,7 @@ async def get_all_orders(
                 qty=order.qty,
                 price=order.price
             )
-            
+
             # Создаем ответ по каждому ордеру
             orders.append(OrderDetailResponse(
                 id=order.id,
@@ -114,7 +120,7 @@ async def get_all_orders(
                 body=order_body,
                 filled=order.filled or 0
             ))
-        
+
         return orders
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
@@ -133,10 +139,10 @@ async def get_order_by_id(
 ):
     try:
         order = await order_crud.get(id=order_id, session=session)
-        
+
         if not order:
             raise HTTPException(status_code=404, detail='Заявка не найдена')
-        
+
         # Создаем тело ордера
         order_body = OrderBodyResponse(
             direction=order.direction,
@@ -144,7 +150,7 @@ async def get_order_by_id(
             qty=order.qty,
             price=order.price
         )
-        
+
         # Формируем ответ
         return OrderDetailResponse(
             id=order.id,

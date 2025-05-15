@@ -1,11 +1,10 @@
-import uuid
-
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
 
 from app.core.logs.logs import error_log
-from app.crud.v1.balance import balance_crud
 from app.models.balance import Balance
+from app.crud.v1.balance import balance_crud
 
 
 async def lock_balance_row(user_id: str, ticker: str, session: AsyncSession):
@@ -77,7 +76,7 @@ async def add_assets(user_id: str, qty: int, ticker: str, session: AsyncSession)
         )
     )
     balance = result.scalars().first()
-
+    
     if balance:
         # Если запись существует, обновляем её
         error_log(f"Обновление существующего баланса активов: было {balance.amount}, будет {balance.amount + qty}")
@@ -104,7 +103,7 @@ async def add_funds(user_id: str, amount: int, ticker: str, session: AsyncSessio
         )
     )
     balance = result.scalars().first()
-
+    
     if balance:
         # Если запись существует, обновляем её
         error_log(f"Обновление существующего баланса средств: было {balance.amount}, будет {balance.amount + amount}")
@@ -117,4 +116,4 @@ async def add_funds(user_id: str, amount: int, ticker: str, session: AsyncSessio
         # Если записи нет, создаём новую
         error_log(f"Создание нового баланса средств: {amount}")
         new_balance = Balance(user_id=user_id, ticker=ticker, amount=amount, blocked_amount=0)
-        session.add(new_balance)
+        session.add(new_balance) 
