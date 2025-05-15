@@ -56,11 +56,11 @@ async def cancel_order(
         order = await order_crud.get(id=order_id, session=session)
         
         if not order:
-            raise HTTPException(status_code=404, detail='Заявка не найдена')
+            raise ValueError('Заявка не найдена')
         
         # Проверяем, что пользователь является владельцем заявки
         if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail='Нет доступа к этой заявке')
+            raise ValueError('Нет доступа к этой заявке')
         
         # Отменяем заявку
         updated_order = await order_crud.update_order_status(
