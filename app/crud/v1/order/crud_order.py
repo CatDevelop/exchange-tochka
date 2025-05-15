@@ -14,8 +14,10 @@ from app.crud.v1.order.balance_operations import (
     lock_balance_row, 
     block_funds, 
     block_assets, 
-    add_assets, 
-    deduct_funds
+    add_assets,
+    add_funds,
+    deduct_funds,
+    deduct_assets
 )
 from app.crud.v1.order.matching_engine import match_sell_orders, match_buy_orders
 from app.crud.v1.order.market_data import get_orderbook

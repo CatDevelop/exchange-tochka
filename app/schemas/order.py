@@ -1,5 +1,5 @@
 from typing import Optional, List, Union
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -60,9 +60,18 @@ class OrderDetailResponse(BaseModel):
     id: str
     status: OrderStatus
     user_id: str
-    timestamp: datetime = Field(..., description="Время создания заявки", json_schema_extra={"timezone_aware": False})
+    timestamp: datetime = Field(..., description="Время создания заявки")
     body: OrderBodyResponse
     filled: int = 0
+
+    @field_validator('timestamp')
+    @classmethod
+    def ensure_timezone(cls, v: datetime) -> datetime:
+        """Убедиться, что datetime содержит информацию о временной зоне"""
+        if v.tzinfo is None:
+            # Если временная зона не указана, используем UTC
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class Level(BaseModel):

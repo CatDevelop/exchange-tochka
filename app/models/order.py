@@ -40,7 +40,7 @@ class Order(Base):
     qty = Column(Integer, nullable=False)
     price = Column(Integer, nullable=True)
     filled = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=functions.now(), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=functions.now(), nullable=False)
 
     @validates("price")
     def validate_non_negative(self, key, value):
