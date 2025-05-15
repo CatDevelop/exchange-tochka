@@ -50,10 +50,6 @@ async def get_balances(
     '/admin/balance/deposit',
     response_model=OkResponse,
     dependencies=[Depends(is_user_admin)],
-    responses={
-        422: {'description': 'Ошибка валидации данных'},
-        500: {'description': 'Внутренняя ошибка сервера'},
-    },
     tags=['admin'],
 )
 async def deposit_to_balance(

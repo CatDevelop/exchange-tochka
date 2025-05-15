@@ -44,9 +44,7 @@ async def add_instrument(
     summary='Удалить инструмент',
     dependencies=[Depends(is_user_admin)],
     responses={
-        404: {'description': 'Инструмент не найден'},
-        422: {'description': 'Ошибка валидации данных'},
-        500: {'description': 'Внутренняя ошибка сервера'},
+        404: {'description': 'The instrument was not found'},
     },
 )
 async def delete_instrument(
