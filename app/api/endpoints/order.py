@@ -77,7 +77,7 @@ async def cancel_order(
 
 
 @router.get(
-    '/orders',
+    '/order',
     response_model=List[OrderDetailResponse],
     summary='Получение списка всех заявок',
     tags=['order'],
