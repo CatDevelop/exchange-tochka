@@ -480,17 +480,47 @@ class CRUDOrder(CRUDOrderBase):
                 
             rub_balance.amount -= spent_money  # Списываем потраченные средства
             
+            # Добавляем купленные активы на баланс покупателя
             if asset_balance:
                 asset_balance.amount += filled  # Добавляем купленные активы
+                error_log(f"Добавлено активов покупателю: {filled} {ticker}, новый баланс: {asset_balance.amount} {ticker}")
             else:
-                # Создаем новый баланс активов
-                new_asset_balance = Balance(
-                    user_id=user_id,
-                    ticker=ticker,
-                    amount=filled,
-                    blocked_amount=0
-                )
-                session.add(new_asset_balance)
+                # Создаем новый баланс активов если не существует
+                try:
+                    error_log(f"Создание нового баланса активов для покупателя: {filled} {ticker}")
+                    new_asset_balance = Balance(
+                        user_id=user_id,
+                        ticker=ticker,
+                        amount=filled,
+                        blocked_amount=0
+                    )
+                    session.add(new_asset_balance)
+                    await session.flush()  # Пробуем создать запись сразу
+                except Exception as e:
+                    # Если возникла ошибка уникальности, обновляем существующий баланс
+                    if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                        error_log(f"Конфликт при создании баланса {ticker} для покупателя, повторная попытка: {str(e)}")
+                        # Откатываем неудачную попытку
+                        await session.rollback()
+                        
+                        # Повторно пытаемся получить баланс активов
+                        asset_result = await session.execute(
+                            select(Balance).where(
+                                Balance.user_id == user_id,
+                                Balance.ticker == ticker
+                            ).with_for_update()
+                        )
+                        asset_balance = asset_result.scalar_one_or_none()
+                        
+                        if asset_balance:
+                            # Если нашли баланс, добавляем активы
+                            asset_balance.amount += filled
+                            error_log(f"Добавлено активов покупателю после обработки конфликта: {filled} {ticker}, новый баланс: {asset_balance.amount} {ticker}")
+                        else:
+                            error_log(f"Не удалось найти или создать баланс {ticker} для покупателя после конфликта")
+                    else:
+                        # Если ошибка другая, логируем
+                        error_log(f"Ошибка при создании баланса {ticker} для покупателя: {str(e)}")
         
         # Если это рыночная заявка или полностью исполненная лимитная
         if is_limit and (filled == qty or not is_limit):
@@ -646,19 +676,47 @@ class CRUDOrder(CRUDOrderBase):
             # Логируем обновление баланса продавца
             error_log(f"Обновление баланса продавца: списано {filled} {ticker}, осталось {asset_balance.amount} (заблокировано {asset_balance.blocked_amount})")
             
+            # Добавляем полученные средства на счет продавца
             if rub_balance:
                 rub_balance.amount += earned_money  # Добавляем полученные средства
                 error_log(f"Добавлено на счет продавца {earned_money} RUB, новый баланс: {rub_balance.amount} RUB")
             else:
-                # Создаем новый баланс RUB
-                new_rub_balance = Balance(
-                    user_id=user_id,
-                    ticker="RUB",
-                    amount=earned_money,
-                    blocked_amount=0
-                )
-                session.add(new_rub_balance)
-                error_log(f"Создан новый счет для продавца с балансом {earned_money} RUB")
+                # Пытаемся создать новый баланс RUB, но с обработкой возможных ошибок
+                try:
+                    error_log(f"Создание нового RUB баланса для продавца с суммой {earned_money}")
+                    new_rub_balance = Balance(
+                        user_id=user_id,
+                        ticker="RUB",
+                        amount=earned_money,
+                        blocked_amount=0
+                    )
+                    session.add(new_rub_balance)
+                    await session.flush()  # Пробуем создать запись сразу
+                except Exception as e:
+                    # Если возникла ошибка уникальности, обновляем существующий баланс
+                    if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                        error_log(f"Конфликт при создании RUB баланса для продавца, повторная попытка: {str(e)}")
+                        # Откатываем неудачную попытку
+                        await session.rollback()
+                        
+                        # Повторно пытаемся получить баланс RUB
+                        rub_result = await session.execute(
+                            select(Balance).where(
+                                Balance.user_id == user_id,
+                                Balance.ticker == "RUB"
+                            ).with_for_update()
+                        )
+                        rub_balance = rub_result.scalar_one_or_none()
+                        
+                        if rub_balance:
+                            # Если нашли баланс, добавляем средства
+                            rub_balance.amount += earned_money
+                            error_log(f"Добавлено на счет продавца после обработки конфликта: {earned_money} RUB, новый баланс: {rub_balance.amount} RUB")
+                        else:
+                            error_log(f"Не удалось найти или создать RUB баланс для продавца после конфликта")
+                    else:
+                        # Если ошибка другая, логируем
+                        error_log(f"Ошибка при создании RUB баланса для продавца: {str(e)}")
         
         # Если это рыночная заявка или полностью исполненная лимитная
         if not is_limit or filled == qty:
