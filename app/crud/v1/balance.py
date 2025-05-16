@@ -165,6 +165,13 @@ class CRUDBalance(CRUDBase[Balance]):
             raise ValueError('Сумма блокировки должна быть положительной')
 
         try:
+            # Строгий порядок блокировок: сначала RUB, потом тикер
+            if ticker != "RUB":
+                await async_session.execute(
+                    select(self.model)
+                    .where(and_(self.model.user_id == user_id, self.model.ticker == "RUB"))
+                    .with_for_update()
+                )
             # Проверяем доступный баланс
             available_amount = await self.get_user_available_balance(user_id, ticker, async_session)
             if available_amount < amount:
@@ -199,10 +206,19 @@ class CRUDBalance(CRUDBase[Balance]):
             raise ValueError('Сумма разблокировки должна быть положительной')
 
         try:
+            # Строгий порядок блокировок: сначала RUB, потом тикер
+            if ticker != "RUB":
+                await async_session.execute(
+                    select(self.model)
+                    .where(and_(self.model.user_id == user_id, self.model.ticker == "RUB"))
+                    .with_for_update()
+                )
             result = await async_session.execute(
-                select(self.model).where(
+                select(self.model)
+                .where(
                     and_(self.model.user_id == user_id, self.model.ticker == ticker)
                 )
+                .with_for_update()
             )
             balance = result.scalar_one_or_none()
             
