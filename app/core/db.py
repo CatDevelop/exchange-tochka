@@ -36,7 +36,16 @@ class Base(AsyncAttrs, DeclarativeBase):
         return name
 
 
-engine = create_async_engine(settings.db.url)
+# Увеличение лимитов для пула соединений чтобы избежать ошибки TimeoutError
+engine = create_async_engine(
+    settings.db.url,
+    pool_size=20,  # Увеличиваем с 5 по умолчанию до 20
+    max_overflow=20,  # Увеличиваем с 10 по умолчанию до 20
+    pool_timeout=60,  # Увеличиваем таймаут с 30 до 60 секунд
+    pool_recycle=1800,  # Переиспользование соединений через 30 минут
+    pool_pre_ping=True,  # Проверка соединения перед использованием
+    echo=False  # Не выводить SQL-запросы в лог
+)
 
 
 AsyncSessionLocal = async_sessionmaker(
@@ -46,4 +55,12 @@ AsyncSessionLocal = async_sessionmaker(
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as async_session:
-        yield async_session
+        try:
+            yield async_session
+            # Явно закрываем соединение после использования
+            await async_session.close()
+        except Exception as e:
+            # Если произошла ошибка, делаем откат и закрываем соединение
+            await async_session.rollback()
+            await async_session.close()
+            raise e

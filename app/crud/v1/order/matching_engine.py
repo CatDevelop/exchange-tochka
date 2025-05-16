@@ -23,7 +23,8 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
         Order.ticker == ticker,
         Order.direction == OrderDirection.SELL,
         Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-    ).order_by(Order.price.asc().nulls_last())
+        Order.qty > Order.filled,  # Только ордера с неисполненной частью
+    ).order_by(Order.price.asc().nulls_last(), Order.id.asc())  # Сортировка по цене и ID для предотвращения deadlock
 
     if price is not None:
         query = query.where(Order.price <= price)
@@ -112,7 +113,8 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
         Order.ticker == ticker,
         Order.direction == OrderDirection.BUY,
         Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-    ).order_by(Order.price.desc().nulls_last())
+        Order.qty > Order.filled,  # Только ордера с неисполненной частью
+    ).order_by(Order.price.desc().nulls_last(), Order.id.asc())  # Сортировка по цене и ID для предотвращения deadlock
 
     if price is not None:
         query = query.where(Order.price >= price)
