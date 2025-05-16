@@ -137,12 +137,19 @@ class CRUDOrder(CRUDOrderBase):
             error_log(f"Создан новый ордер {order_id}")
             
             # Блокируем балансы после создания ордера
-            if direction == OrderDirection.BUY and is_limit:
-                # Блокируем средства для лимитного ордера на покупку
-                await block_funds(user_id, qty * price, "RUB", session)
-            elif direction == OrderDirection.SELL:
-                # Блокируем активы для ордера на продажу
-                await block_assets(user_id, qty, ticker, session)
+            try:
+                if direction == OrderDirection.BUY and is_limit:
+                    # Блокируем средства для лимитного ордера на покупку
+                    await block_funds(user_id, qty * price, "RUB", session)
+                elif direction == OrderDirection.SELL:
+                    # Блокируем активы для ордера на продажу
+                    await block_assets(user_id, qty, ticker, session)
+            except ValueError as e:
+                # Если не хватает средств для блокировки, меняем статус ордера на CANCELLED
+                error_log(f"Недостаточно средств для блокировки: {str(e)}")
+                order.status = OrderStatus.CANCELLED
+                await session.commit()
+                return order
             
             # Сопоставление с существующими ордерами
             rub_balance = None
@@ -508,50 +515,84 @@ class CRUDOrder(CRUDOrderBase):
     ) -> None:
         """Обновление баланса продавца при сопоставлении его ордера на продажу"""
         executed_amount = executed_qty * executed_price
+        error_log(f"Обновление баланса продавца {seller_id}: проданы {executed_qty} {ticker} по цене {executed_price}")
+        
+        # Получаем глобальную блокировку для пользователя
+        await get_global_lock(seller_id, session)
         
         # Блокируем баланс продавца для обновления
-        seller_asset_balance = await session.execute(
-            select(Balance).where(
-                Balance.user_id == seller_id, 
-                Balance.ticker == ticker
-            ).with_for_update()
-        )
-        seller_asset_balance = seller_asset_balance.scalar_one_or_none()
-        
-        seller_rub_balance = await session.execute(
-            select(Balance).where(
-                Balance.user_id == seller_id, 
-                Balance.ticker == "RUB"
-            ).with_for_update()
-        )
-        seller_rub_balance = seller_rub_balance.scalar_one_or_none()
-        
-        # Обновляем баланс продавца
-        if seller_asset_balance:
-            # Разблокируем активы, но не больше, чем заблокировано
-            seller_asset_balance.blocked_amount -= min(executed_qty, seller_asset_balance.blocked_amount)
-            
-            # Убедимся, что не уйдем в отрицательный баланс
-            if seller_asset_balance.amount < executed_qty:
-                error_log(f"Предотвращено отрицательное значение баланса активов: available={seller_asset_balance.amount}, required={executed_qty}")
-                executed_qty = seller_asset_balance.amount
-                
-            seller_asset_balance.amount -= executed_qty
-            error_log(f"Списано у продавца: {executed_qty} {ticker}, новый баланс: {seller_asset_balance.amount} {ticker}")
-        
-        if seller_rub_balance:
-            seller_rub_balance.amount += executed_amount
-            error_log(f"Добавлено продавцу: {executed_amount} RUB, новый баланс: {seller_rub_balance.amount} RUB")
-        else:
-            # Создаем новый баланс если не существует
-            new_rub_balance = Balance(
-                user_id=seller_id,
-                ticker="RUB",
-                amount=executed_amount,
-                blocked_amount=0
+        try:
+            seller_asset_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == seller_id, 
+                    Balance.ticker == ticker
+                ).with_for_update()
             )
-            session.add(new_rub_balance)
-            error_log(f"Создан новый баланс RUB для продавца: {executed_amount} RUB")
+            seller_asset_balance = seller_asset_balance.scalar_one_or_none()
+            
+            seller_rub_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == seller_id, 
+                    Balance.ticker == "RUB"
+                ).with_for_update()
+            )
+            seller_rub_balance = seller_rub_balance.scalar_one_or_none()
+            
+            # Обновляем баланс продавца
+            if seller_asset_balance:
+                # Разблокируем активы, но не больше, чем заблокировано
+                unblock_qty = min(executed_qty, seller_asset_balance.blocked_amount)
+                if unblock_qty > 0:
+                    seller_asset_balance.blocked_amount -= unblock_qty
+                    error_log(f"Разблокировано активов: {unblock_qty} {ticker} из запрошенных {executed_qty}")
+                
+                # Проверяем, что не уйдем в отрицательный баланс
+                safe_qty = min(executed_qty, seller_asset_balance.amount)
+                if safe_qty < executed_qty:
+                    error_log(f"Предотвращено отрицательное значение баланса активов: available={seller_asset_balance.amount}, required={executed_qty}")
+                
+                seller_asset_balance.amount -= safe_qty
+                error_log(f"Списано у продавца: {safe_qty} {ticker}, новый баланс: {seller_asset_balance.amount} {ticker}")
+            else:
+                error_log(f"Не найден баланс активов {ticker} для продавца {seller_id}")
+            
+            # Добавляем средства продавцу
+            if seller_rub_balance:
+                seller_rub_balance.amount += executed_amount
+                error_log(f"Добавлено продавцу: {executed_amount} RUB, новый баланс: {seller_rub_balance.amount} RUB")
+            else:
+                # Создаем новый баланс если не существует
+                try:
+                    error_log(f"Создание нового баланса RUB для продавца: {executed_amount} RUB")
+                    new_rub_balance = Balance(
+                        user_id=seller_id,
+                        ticker="RUB",
+                        amount=executed_amount,
+                        blocked_amount=0
+                    )
+                    session.add(new_rub_balance)
+                    await session.flush()
+                except Exception as e:
+                    if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                        error_log(f"Конфликт при создании баланса, повторная попытка: {str(e)}")
+                        # Получаем баланс ещё раз и обновляем его
+                        seller_rub_balance = await session.execute(
+                            select(Balance).where(
+                                Balance.user_id == seller_id, 
+                                Balance.ticker == "RUB"
+                            ).with_for_update()
+                        )
+                        seller_rub_balance = seller_rub_balance.scalar_one_or_none()
+                        if seller_rub_balance:
+                            seller_rub_balance.amount += executed_amount
+                            error_log(f"Добавлено продавцу после повторного получения: {executed_amount} RUB, новый баланс: {seller_rub_balance.amount} RUB")
+                        else:
+                            error_log(f"Не удалось добавить средства продавцу: {str(e)}")
+                    else:
+                        error_log(f"Ошибка при создании баланса RUB для продавца: {str(e)}")
+        except Exception as e:
+            error_log(f"Ошибка при обновлении баланса продавца: {str(e)}")
+            # Не выбрасываем исключение чтобы не прерывать выполнение всей транзакции
 
     @error_log
     async def _process_sell_matching(
@@ -642,50 +683,84 @@ class CRUDOrder(CRUDOrderBase):
     ) -> None:
         """Обновление баланса покупателя при сопоставлении его ордера на покупку"""
         executed_amount = executed_qty * executed_price
+        error_log(f"Обновление баланса покупателя {buyer_id}: куплены {executed_qty} {ticker} по цене {executed_price}")
+        
+        # Получаем глобальную блокировку для пользователя
+        await get_global_lock(buyer_id, session)
         
         # Блокируем баланс покупателя для обновления
-        buyer_asset_balance = await session.execute(
-            select(Balance).where(
-                Balance.user_id == buyer_id, 
-                Balance.ticker == ticker
-            ).with_for_update()
-        )
-        buyer_asset_balance = buyer_asset_balance.scalar_one_or_none()
-        
-        buyer_rub_balance = await session.execute(
-            select(Balance).where(
-                Balance.user_id == buyer_id, 
-                Balance.ticker == "RUB"
-            ).with_for_update()
-        )
-        buyer_rub_balance = buyer_rub_balance.scalar_one_or_none()
-        
-        # Обновляем баланс покупателя
-        if buyer_rub_balance:
-            # Разблокируем средства, но не больше, чем заблокировано
-            buyer_rub_balance.blocked_amount -= min(executed_amount, buyer_rub_balance.blocked_amount)
-            
-            # Убедимся, что не уйдем в отрицательный баланс
-            if buyer_rub_balance.amount < executed_amount:
-                error_log(f"Предотвращено отрицательное значение баланса: available={buyer_rub_balance.amount}, required={executed_amount}")
-                executed_amount = buyer_rub_balance.amount
-                
-            buyer_rub_balance.amount -= executed_amount
-            error_log(f"Списано у покупателя: {executed_amount} RUB, новый баланс: {buyer_rub_balance.amount} RUB")
-        
-        if buyer_asset_balance:
-            buyer_asset_balance.amount += executed_qty
-            error_log(f"Добавлено покупателю: {executed_qty} {ticker}, новый баланс: {buyer_asset_balance.amount} {ticker}")
-        else:
-            # Создаем новый баланс если не существует
-            new_asset_balance = Balance(
-                user_id=buyer_id,
-                ticker=ticker,
-                amount=executed_qty,
-                blocked_amount=0
+        try:
+            buyer_asset_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == buyer_id, 
+                    Balance.ticker == ticker
+                ).with_for_update()
             )
-            session.add(new_asset_balance)
-            error_log(f"Создан новый баланс для покупателя: {executed_qty} {ticker}")
+            buyer_asset_balance = buyer_asset_balance.scalar_one_or_none()
+            
+            buyer_rub_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == buyer_id, 
+                    Balance.ticker == "RUB"
+                ).with_for_update()
+            )
+            buyer_rub_balance = buyer_rub_balance.scalar_one_or_none()
+            
+            # Обновляем баланс покупателя
+            if buyer_rub_balance:
+                # Разблокируем средства, но не больше, чем заблокировано
+                unblock_amount = min(executed_amount, buyer_rub_balance.blocked_amount)
+                if unblock_amount > 0:
+                    buyer_rub_balance.blocked_amount -= unblock_amount
+                    error_log(f"Разблокировано средств: {unblock_amount} RUB из запрошенных {executed_amount}")
+                
+                # Проверяем, что не уйдем в отрицательный баланс
+                safe_amount = min(executed_amount, buyer_rub_balance.amount)
+                if safe_amount < executed_amount:
+                    error_log(f"Предотвращено отрицательное значение баланса: available={buyer_rub_balance.amount}, required={executed_amount}")
+                
+                buyer_rub_balance.amount -= safe_amount
+                error_log(f"Списано у покупателя: {safe_amount} RUB, новый баланс: {buyer_rub_balance.amount} RUB")
+            else:
+                error_log(f"Не найден баланс RUB для покупателя {buyer_id}")
+            
+            # Добавляем активы покупателю
+            if buyer_asset_balance:
+                buyer_asset_balance.amount += executed_qty
+                error_log(f"Добавлено покупателю: {executed_qty} {ticker}, новый баланс: {buyer_asset_balance.amount} {ticker}")
+            else:
+                # Создаем новый баланс если не существует
+                try:
+                    error_log(f"Создание нового баланса {ticker} для покупателя: {executed_qty}")
+                    new_asset_balance = Balance(
+                        user_id=buyer_id,
+                        ticker=ticker,
+                        amount=executed_qty,
+                        blocked_amount=0
+                    )
+                    session.add(new_asset_balance)
+                    await session.flush()
+                except Exception as e:
+                    if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                        error_log(f"Конфликт при создании баланса, повторная попытка: {str(e)}")
+                        # Получаем баланс ещё раз и обновляем его
+                        buyer_asset_balance = await session.execute(
+                            select(Balance).where(
+                                Balance.user_id == buyer_id, 
+                                Balance.ticker == ticker
+                            ).with_for_update()
+                        )
+                        buyer_asset_balance = buyer_asset_balance.scalar_one_or_none()
+                        if buyer_asset_balance:
+                            buyer_asset_balance.amount += executed_qty
+                            error_log(f"Добавлено покупателю после повторного получения: {executed_qty} {ticker}, новый баланс: {buyer_asset_balance.amount} {ticker}")
+                        else:
+                            error_log(f"Не удалось добавить активы покупателю: {str(e)}")
+                    else:
+                        error_log(f"Ошибка при создании баланса {ticker} для покупателя: {str(e)}")
+        except Exception as e:
+            error_log(f"Ошибка при обновлении баланса покупателя: {str(e)}")
+            # Не выбрасываем исключение чтобы не прерывать выполнение всей транзакции
 
     @error_log
     async def _set_order_status(

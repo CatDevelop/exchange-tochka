@@ -194,23 +194,46 @@ async def add_assets(user_id: str, qty: int, ticker: str, session: AsyncSession)
         select(Balance).where(
             Balance.user_id == user_id,
             Balance.ticker == ticker
-        )
+        ).with_for_update()  # Блокируем строку для предотвращения race condition
     )
-    balance = result.scalars().first()
+    balance = result.scalar_one_or_none()
     
     if balance:
         # Если запись существует, обновляем её
         error_log(f"Обновление существующего баланса активов: было {balance.amount}, будет {balance.amount + qty}")
-        await session.execute(
-            Balance.__table__.update()
-            .where(Balance.user_id == user_id, Balance.ticker == ticker)
-            .values(amount=Balance.amount + qty)
-        )
+        balance.amount += qty  # Используем прямое обновление объекта ORM вместо UPDATE запроса
     else:
         # Если записи нет, создаём новую
-        error_log(f"Создание нового баланса активов: {qty}")
-        new_balance = Balance(user_id=user_id, ticker=ticker, amount=qty, blocked_amount=0)
-        session.add(new_balance)
+        try:
+            error_log(f"Создание нового баланса активов: {qty}")
+            new_balance = Balance(user_id=user_id, ticker=ticker, amount=qty, blocked_amount=0)
+            session.add(new_balance)
+            await session.flush()  # Пробуем создать запись сразу
+        except Exception as e:
+            # Если возникла ошибка уникальности, еще раз пробуем получить и обновить существующую запись
+            if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                error_log(f"Конфликт при создании баланса, повторная попытка получения: {str(e)}")
+                await session.rollback()  # Откатываем неудачную операцию
+                
+                # Повторно получаем баланс
+                result = await session.execute(
+                    select(Balance).where(
+                        Balance.user_id == user_id,
+                        Balance.ticker == ticker
+                    ).with_for_update()
+                )
+                balance = result.scalar_one_or_none()
+                
+                if balance:
+                    balance.amount += qty
+                    error_log(f"Успешно обновлен существующий баланс: {balance.amount}")
+                else:
+                    error_log(f"Не удалось найти или создать баланс после конфликта: {str(e)}")
+                    raise ValueError(f"Не удалось обновить баланс: {str(e)}")
+            else:
+                # Если ошибка другая, пробрасываем ее дальше
+                error_log(f"Ошибка при создании баланса: {str(e)}")
+                raise
 
 
 async def add_funds(user_id: str, amount: int, ticker: str, session: AsyncSession):
@@ -221,20 +244,43 @@ async def add_funds(user_id: str, amount: int, ticker: str, session: AsyncSessio
         select(Balance).where(
             Balance.user_id == user_id,
             Balance.ticker == ticker
-        )
+        ).with_for_update()  # Блокируем строку для предотвращения race condition
     )
-    balance = result.scalars().first()
+    balance = result.scalar_one_or_none()
     
     if balance:
         # Если запись существует, обновляем её
         error_log(f"Обновление существующего баланса средств: было {balance.amount}, будет {balance.amount + amount}")
-        await session.execute(
-            Balance.__table__.update()
-            .where(Balance.user_id == user_id, Balance.ticker == ticker)
-            .values(amount=Balance.amount + amount)
-        )
+        balance.amount += amount  # Используем прямое обновление объекта ORM вместо UPDATE запроса
     else:
         # Если записи нет, создаём новую
-        error_log(f"Создание нового баланса средств: {amount}")
-        new_balance = Balance(user_id=user_id, ticker=ticker, amount=amount, blocked_amount=0)
-        session.add(new_balance) 
+        try:
+            error_log(f"Создание нового баланса средств: {amount}")
+            new_balance = Balance(user_id=user_id, ticker=ticker, amount=amount, blocked_amount=0)
+            session.add(new_balance)
+            await session.flush()  # Пробуем создать запись сразу
+        except Exception as e:
+            # Если возникла ошибка уникальности, еще раз пробуем получить и обновить существующую запись
+            if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                error_log(f"Конфликт при создании баланса, повторная попытка получения: {str(e)}")
+                await session.rollback()  # Откатываем неудачную операцию
+                
+                # Повторно получаем баланс
+                result = await session.execute(
+                    select(Balance).where(
+                        Balance.user_id == user_id,
+                        Balance.ticker == ticker
+                    ).with_for_update()
+                )
+                balance = result.scalar_one_or_none()
+                
+                if balance:
+                    balance.amount += amount
+                    error_log(f"Успешно обновлен существующий баланс: {balance.amount}")
+                else:
+                    error_log(f"Не удалось найти или создать баланс после конфликта: {str(e)}")
+                    raise ValueError(f"Не удалось обновить баланс: {str(e)}")
+            else:
+                # Если ошибка другая, пробрасываем ее дальше
+                error_log(f"Ошибка при создании баланса: {str(e)}")
+                raise 

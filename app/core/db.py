@@ -36,15 +36,15 @@ class Base(AsyncAttrs, DeclarativeBase):
         return name
 
 
-# Увеличение лимитов для пула соединений чтобы избежать ошибки TimeoutError
+# Увеличение лимитов для пула соединений чтобы избежать ошибки TooManyConnectionsError
 engine = create_async_engine(
     settings.db.url,
-    pool_size=20,  # Увеличиваем с 5 по умолчанию до 20
-    max_overflow=20,  # Увеличиваем с 10 по умолчанию до 20
-    pool_timeout=60,  # Увеличиваем таймаут с 30 до 60 секунд
-    pool_recycle=1800,  # Переиспользование соединений через 30 минут
-    pool_pre_ping=True,  # Проверка соединения перед использованием
-    echo=False  # Не выводить SQL-запросы в лог
+    pool_size=20,
+    max_overflow=20,
+    pool_timeout=120,  
+    pool_recycle=1800, 
+    pool_pre_ping=True,  
+    echo=False 
 )
 
 
