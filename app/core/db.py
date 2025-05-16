@@ -39,7 +39,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 # Увеличение лимитов для пула соединений чтобы избежать ошибки TooManyConnectionsError
 engine = create_async_engine(
     settings.db.url,
-    pool_size=50,
+    pool_size=20,
     max_overflow=30,
     pool_timeout=120,
     pool_recycle=1800,

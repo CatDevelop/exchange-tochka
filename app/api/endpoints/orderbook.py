@@ -36,7 +36,7 @@ async def get_orderbook(
 
 
 @router.get(
-    '/transactions/{ticker}',
+    '/public/transactions/{ticker}',
     response_model=list[TransactionResponse],
     summary='Получение истории транзакций',
     tags=['public'],
