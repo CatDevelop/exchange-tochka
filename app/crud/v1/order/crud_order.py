@@ -22,6 +22,13 @@ from app.crud.v1.order.matching_engine import match_sell_orders, match_buy_order
 from app.crud.v1.order.market_data import get_orderbook
 
 
+class InsufficientFundsError(ValueError):
+    """Ошибка недостаточного баланса с созданным CANCELLED ордером"""
+    def __init__(self, message: str, order: Order):
+        super().__init__(message)
+        self.order = order
+
+
 class CRUDOrder(CRUDOrderBase):
     """Класс для работы с ордерами"""
 
@@ -33,27 +40,30 @@ class CRUDOrder(CRUDOrderBase):
             session: AsyncSession,
     ) -> Order:
         """Создание нового ордера с учетом сопоставления с существующими ордерами"""
-        # Начинаем транзакцию
-        async with session.begin_nested():
-            order_id = str(uuid4())
-            price = getattr(body, 'price', None)
-            is_limit = price is not None
-            direction = body.direction
-            ticker = body.ticker
-            qty = body.qty
+        # Все операции выполняем в одной транзакции
+        order_id = str(uuid4())
+        price = getattr(body, 'price', None)
+        is_limit = price is not None
+        direction = body.direction
+        ticker = body.ticker
+        qty = body.qty
+    
+        filled = 0
+        spent_money = 0
+        earned_money = 0
         
-            filled = 0
-            spent_money = 0
-            earned_money = 0
-            
+        try:
             # Проверяем достаточность баланса
             if direction == OrderDirection.BUY and is_limit:
                 # Для покупки проверяем достаточно ли RUB
                 required_amount = qty * price
                 available_rub = await balance_crud.get_user_available_balance(user_id, "RUB", session)
                 if available_rub < required_amount:
-                    # Для покупки создаем ордер со статусом CANCELLED
-                    error_log(f"Недостаточно средств для покупки. Требуется: {required_amount} RUB, доступно: {available_rub} RUB")
+                    # Создаем отмененный ордер и затем выбрасываем исключение
+                    error_msg = f"Недостаточно средств для создания ордера на покупку. Требуется: {required_amount} RUB, доступно: {available_rub} RUB"
+                    error_log(error_msg)
+                    
+                    # Создаем ордер со статусом CANCELLED
                     cancelled_order = Order(
                         id=order_id,
                         status=OrderStatus.CANCELLED,
@@ -65,16 +75,35 @@ class CRUDOrder(CRUDOrderBase):
                         filled=0,
                     )
                     session.add(cancelled_order)
-                    return cancelled_order
+                    await session.commit()
+                    
+                    # Выбрасываем специальное исключение, содержащее ордер
+                    raise InsufficientFundsError(error_msg, cancelled_order)
             
             elif direction == OrderDirection.SELL:
                 # Для продажи проверяем достаточно ли актива
                 available_asset = await balance_crud.get_user_available_balance(user_id, ticker, session)
                 if available_asset < qty:
-                    # Для продажи бросаем исключение
+                    # Создаем отмененный ордер и затем выбрасываем исключение
                     error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available_asset} {ticker}"
                     error_log(error_msg)
-                    raise ValueError(error_msg)
+                    
+                    # Создаем ордер со статусом CANCELLED
+                    cancelled_order = Order(
+                        id=order_id,
+                        status=OrderStatus.CANCELLED,
+                        user_id=user_id,
+                        direction=direction,
+                        ticker=ticker,
+                        qty=qty,
+                        price=price,
+                        filled=0,
+                    )
+                    session.add(cancelled_order)
+                    await session.commit()
+                    
+                    # Выбрасываем специальное исключение, содержащее ордер
+                    raise InsufficientFundsError(error_msg, cancelled_order)
             
             # Создаем ордер со статусом NEW
             pending_order = Order(
@@ -166,11 +195,14 @@ class CRUDOrder(CRUDOrderBase):
             # Обновляем статус ордера
             pending_order.status = status
             pending_order.filled = filled
-        
-        try:
-            # Делаем коммит внешней транзакции
+            
+            # Делаем коммит транзакции
             await session.commit()
             return pending_order
+        except InsufficientFundsError as e:
+            # Это специальное исключение, ордер уже создан и транзакция закоммичена
+            # Просто пробрасываем ошибку вверх
+            raise ValueError(str(e))
         except Exception as e:
             error_log(f"Ошибка при создании ордера: {str(e)}")
             await session.rollback()
@@ -184,8 +216,7 @@ class CRUDOrder(CRUDOrderBase):
         session: AsyncSession,
     ) -> Order:
         """Обновление статуса заявки с разблокировкой средств при необходимости"""
-        # Выполняем всю работу в одной транзакции
-        async with session.begin_nested():
+        try:
             # Получаем ордер с блокировкой
             result = await session.execute(
                 select(Order).where(Order.id == order_id).with_for_update()
@@ -233,7 +264,6 @@ class CRUDOrder(CRUDOrderBase):
                         except ValueError as e:
                             error_log(f"Ошибка при разблокировке активов: {str(e)}")
         
-        try:
             # Делаем коммит внешней транзакции
             await session.commit()
             return order

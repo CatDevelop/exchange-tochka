@@ -62,7 +62,7 @@ async def cancel_order(
         # Проверяем, что пользователь является владельцем заявки или администратором
         is_admin = current_user.role == UserRole.ADMIN
         if order.user_id != current_user.id and not is_admin:
-            raise ValueError('Нет доступа к этой заявке')
+            raise ValueError('Нет доступа к этой заявке у пользователя ' + current_user.id + ' ' + current_user.role)
 
         # Отменяем заявку
         updated_order = await order_crud.update_order_status(
@@ -70,10 +70,6 @@ async def cancel_order(
             new_status=OrderStatus.CANCELLED,
             session=session
         )
-
-        # Логируем, кто отменил заявку
-        if is_admin and order.user_id != current_user.id:
-            error_log(f"Администратор {current_user.id} отменил заявку {order_id} пользователя {order.user_id}")
 
         return CancelOrderResponse(success=True, order_id=updated_order.id)
     except ValueError as e:

@@ -38,12 +38,14 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
     spent_money = 0
 
     for sell_order in sell_orders:
+        # Обрабатываем каждый ордер на продажу
         remaining = sell_order.qty - (sell_order.filled or 0)
         to_fill = min(qty - filled_qty, remaining)
 
         if to_fill <= 0:
             continue
 
+        # Обновляем ордер на продажу
         sell_order.filled = (sell_order.filled or 0) + to_fill
         sell_order.status = (
             OrderStatus.EXECUTED
@@ -61,20 +63,22 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
         
         # Разблокируем активы продавца, если это лимитная заявка
         if sell_order.price is not None:
-            # Разблокировка активов
             try:
                 await balance_crud.unblock_assets(sell_order.user_id, ticker, to_fill, session)
                 error_log(f"Разблокировано активов: {to_fill} {ticker} для пользователя {sell_order.user_id}")
             except ValueError as e:
                 error_log(f"Ошибка при разблокировке активов: {str(e)}")
 
-        await create_transaction(
+        # Создаем запись о транзакции
+        transaction = Transaction(
+            id=str(uuid4()),
             user_id=sell_order.user_id,
             ticker=ticker,
             amount=to_fill,
             price=sell_order.price,
-            session=session,
+            timestamp=datetime.utcnow(),
         )
+        session.add(transaction)
 
         if filled_qty == qty:
             break
@@ -104,12 +108,14 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
     earned_money = 0
 
     for buy_order in buy_orders:
+        # Обрабатываем каждый ордер на покупку
         remaining = buy_order.qty - (buy_order.filled or 0)
         to_fill = min(qty - filled_qty, remaining)
 
         if to_fill <= 0:
             continue
 
+        # Обновляем ордер на покупку
         buy_order.filled = (buy_order.filled or 0) + to_fill
         buy_order.status = (
             OrderStatus.EXECUTED
@@ -127,35 +133,24 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
         
         # Разблокируем и списываем деньги у покупателя, если это лимитная заявка
         if buy_order.price is not None:
-            # Разблокировка средств
             try:
                 await balance_crud.unblock_funds(buy_order.user_id, "RUB", order_cost, session)
                 error_log(f"Разблокировано средств: {order_cost} RUB для пользователя {buy_order.user_id}")
             except ValueError as e:
                 error_log(f"Ошибка при разблокировке средств: {str(e)}")
         
-        await create_transaction(
+        # Создаем запись о транзакции
+        transaction = Transaction(
+            id=str(uuid4()),
             user_id=buy_order.user_id,
             ticker=ticker,
             amount=to_fill,
             price=buy_order.price,
-            session=session,
+            timestamp=datetime.utcnow(),
         )
+        session.add(transaction)
 
         if filled_qty == qty:
             break
 
-    return {"filled_qty": filled_qty, "earned_money": earned_money}
-
-
-async def create_transaction(user_id: str, ticker: str, amount: int, price: int, session: AsyncSession):
-    """Создание транзакции для записи в истории сделок"""
-    transaction = Transaction(
-        id=str(uuid4()),
-        user_id=user_id,
-        ticker=ticker,
-        amount=amount,
-        price=price,
-        timestamp=datetime.utcnow(),
-    )
-    session.add(transaction) 
+    return {"filled_qty": filled_qty, "earned_money": earned_money} 
