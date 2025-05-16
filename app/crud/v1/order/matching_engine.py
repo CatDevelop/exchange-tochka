@@ -10,7 +10,6 @@ from app.models.order import OrderDirection, OrderStatus
 from app.crud.v1.balance import balance_crud
 
 from app.crud.v1.order.balance_operations import (
-    lock_balance_row, 
     add_funds, 
     add_assets, 
     deduct_assets
@@ -19,7 +18,7 @@ from app.crud.v1.order.balance_operations import (
 
 async def match_sell_orders(ticker: str, qty: int, price: int | None, session: AsyncSession) -> dict:
     """Сопоставление заявок на продажу с заявкой на покупку"""
-    # Сначала получаем все подходящие ордера
+    # Получаем подходящие ордера с блокировкой (FOR UPDATE SKIP LOCKED)
     query = select(Order).where(
         Order.ticker == ticker,
         Order.direction == OrderDirection.SELL,
@@ -39,12 +38,6 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
     spent_money = 0
 
     for sell_order in sell_orders:
-        # Блокируем балансы продавца в строго определенном порядке
-        # Всегда сначала RUB, затем тикер - это предотвращает deadlock
-        await lock_balance_row(sell_order.user_id, "RUB", session)
-        if ticker != "RUB":
-            await lock_balance_row(sell_order.user_id, ticker, session)
-
         remaining = sell_order.qty - (sell_order.filled or 0)
         to_fill = min(qty - filled_qty, remaining)
 
@@ -91,7 +84,7 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
 
 async def match_buy_orders(ticker: str, qty: int, price: int | None, session: AsyncSession) -> dict:
     """Сопоставление заявок на покупку с заявкой на продажу"""
-    # Сначала получаем все подходящие ордера
+    # Получаем подходящие ордера с блокировкой (FOR UPDATE SKIP LOCKED)
     query = select(Order).where(
         Order.ticker == ticker,
         Order.direction == OrderDirection.BUY,
@@ -111,12 +104,6 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
     earned_money = 0
 
     for buy_order in buy_orders:
-        # Блокируем балансы покупателя в строго определенном порядке
-        # Всегда сначала RUB, затем тикер - это предотвращает deadlock
-        await lock_balance_row(buy_order.user_id, "RUB", session)
-        if ticker != "RUB":
-            await lock_balance_row(buy_order.user_id, ticker, session)
-
         remaining = buy_order.qty - (buy_order.filled or 0)
         to_fill = min(qty - filled_qty, remaining)
 

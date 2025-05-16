@@ -7,16 +7,6 @@ from app.models.balance import Balance
 from app.crud.v1.balance import balance_crud
 
 
-async def lock_balance_row(user_id: str, ticker: str, session: AsyncSession):
-    """Блокирует баланс пользователя через PostgreSQL advisory lock"""
-    error_log(f"Advisory lock для user_id={user_id}, ticker={ticker}")
-    # Хешируем UUID в 64-битный ключ для advisory lock
-    u = uuid.UUID(user_id)
-    key = u.int & ((1 << 63) - 1)
-    # Acquire advisory lock до конца транзакции
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
-
-
 async def deduct_funds(user_id: str, amount: int, ticker: str, session: AsyncSession):
     """Списание средств с баланса пользователя"""
     error_log(f"Списание средств: user_id={user_id}, ticker={ticker}, amount={amount}")
