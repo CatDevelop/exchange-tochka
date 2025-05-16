@@ -9,7 +9,7 @@ class TransactionResponse(BaseModel):
     ticker: str = Field(..., description="Тикер инструмента")
     amount: int = Field(..., description="Количество")
     price: int = Field(..., description="Цена")
-    timestamp: datetime = Field(..., description="Время транзакции")
+    timestamp: datetime = Field(..., description="Время транзакции", timezone=True)
 
     class Config:
         from_attributes = True

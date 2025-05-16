@@ -99,7 +99,6 @@ async def get_all_orders(
 
         orders = []
         for order in db_orders:
-            # Создаем тело ордера в зависимости от наличия цены
             order_body = OrderBodyResponse(
                 direction=order.direction,
                 ticker=order.ticker,
@@ -107,7 +106,6 @@ async def get_all_orders(
                 price=order.price
             )
 
-            # Создаем ответ по каждому ордеру
             orders.append(OrderDetailResponse(
                 id=order.id,
                 status=order.status,

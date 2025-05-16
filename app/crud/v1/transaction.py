@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +28,11 @@ class CRUDTransaction(CRUDBase[Transaction]):
 
         result = await session.execute(query)
         transactions = result.scalars().all()
+
+        # Добавляем информацию о временной зоне к каждой транзакции
+        for transaction in transactions:
+            if transaction.timestamp and transaction.timestamp.tzinfo is None:
+                transaction.timestamp = transaction.timestamp.replace(tzinfo=timezone.utc)
 
         return transactions
 

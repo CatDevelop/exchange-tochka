@@ -103,9 +103,7 @@ class CRUDOrder(CRUDOrderBase):
         try:
             # Получаем глобальную блокировку для всех операций пользователя
             await get_global_lock(user_id, session)
-            error_log(f"Получена глобальная блокировка для пользователя {user_id}")
-            
-            # Инициализируем параметры ордера
+
             order_id = str(uuid4())
             price = getattr(body, 'price', None)
             is_limit = price is not None
