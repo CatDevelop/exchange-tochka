@@ -15,7 +15,7 @@ router = APIRouter()
 @router.get(
     '/public/orderbook/{ticker}',
     response_model=OrderbookResponse,
-    summary='Получение стакана ордеров',
+    summary='Get Orderbook',
     tags=['public'],
 )
 async def get_orderbook(
@@ -23,16 +23,6 @@ async def get_orderbook(
         limit: Optional[int] = Query(100, ge=1, le=1000, description="Максимальное количество уровней цен"),
         session: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Получение текущего стакана ордеров (биржевой книги) для указанного тикера.
-    
-    - **ticker**: Тикер инструмента (например, BTC, ETH, USD)
-    - **limit**: Максимальное количество уровней цен, которые будут возвращены
-    
-    Возвращает:
-    - **bid_levels**: Уровни спроса (покупки), отсортированные по возрастанию цены
-    - **ask_levels**: Уровни предложения (продажи), отсортированные по возрастанию цены
-    """
     orderbook_data = await order_crud.get_orderbook(
         ticker=ticker,
         session=session,
@@ -56,14 +46,6 @@ async def get_transaction_history(
         limit: Optional[int] = Query(100, ge=1, le=1000, description="Максимальное количество транзакций"),
         session: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Получение истории транзакций для указанного тикера.
-    
-    - **ticker**: Тикер инструмента (например, MEMECOIN, BTC, ETH)
-    - **limit**: Максимальное количество транзакций, которые будут возвращены
-    
-    Возвращает список транзакций, отсортированных по времени (от новых к старым)
-    """
     transactions = await transaction_crud.get_transactions_by_ticker(
         ticker=ticker,
         session=session,

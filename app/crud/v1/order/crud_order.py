@@ -1,10 +1,9 @@
 import time
-import asyncio
 from uuid import uuid4
+import zlib
 
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from asyncpg.exceptions import DeadlockDetectedError
 
 from app.core.logs.logs import error_log
 from app.models import Order, Balance
@@ -23,12 +22,6 @@ from app.crud.v1.order.balance_operations import (
 )
 from app.crud.v1.order.matching_engine import match_sell_orders, match_buy_orders
 from app.crud.v1.order.market_data import get_orderbook
-
-
-# Максимальное количество повторных попыток при deadlock
-MAX_RETRIES = 3
-# Начальная задержка перед повторной попыткой (в секундах)
-INITIAL_RETRY_DELAY = 0.1
 
 
 class InsufficientFundsError(ValueError):
@@ -114,8 +107,8 @@ class CRUDOrder(CRUDOrderBase):
         
         # Получаем advisory lock для предотвращения рейсов в рамках транзакции
         # Используем разные хеши для разных пользователей и тикеров
-        rub_hash = int(hash(f"{user_id}:RUB")) % 2147483647
-        ticker_hash = int(hash(f"{user_id}:{ticker}")) % 2147483647
+        rub_hash = zlib.crc32(f"{user_id}:RUB".encode()) % 2147483647
+        ticker_hash = zlib.crc32(f"{user_id}:{ticker}".encode()) % 2147483647
         
         # Получаем адвизори блокировки в фиксированном порядке - сначала для RUB, потом для ticker
         await session.execute(text(f"SELECT pg_advisory_xact_lock({rub_hash})"))
@@ -513,98 +506,85 @@ class CRUDOrder(CRUDOrderBase):
             session: AsyncSession,
     ) -> Order:
         """Создание нового ордера с учетом сопоставления с существующими ордерами"""
-        retry_count = 0
-        last_exception = None
+        try:
+            # Инициализируем параметры ордера
+            order_id = str(uuid4())
+            price = getattr(body, 'price', None)
+            is_limit = price is not None
+            direction = body.direction
+            ticker = body.ticker
+            qty = body.qty
         
-        while retry_count < MAX_RETRIES:
-            try:
-                # Инициализируем параметры ордера
-                order_id = str(uuid4())
-                price = getattr(body, 'price', None)
-                is_limit = price is not None
-                direction = body.direction
-                ticker = body.ticker
-                qty = body.qty
+            filled = 0
+            spent_money = 0
+            earned_money = 0
             
-                filled = 0
-                spent_money = 0
-                earned_money = 0
+            # Проверка достаточности баланса без блокировки
+            await self._check_balance_availability(user_id, direction, ticker, qty, price, session)
+            
+            # Блокировка строк баланса и проверка достаточности после блокировки
+            rub_balance, asset_balance = await self._lock_balances(user_id, direction, ticker, qty, price, session)
+            
+            # Создание записи ордера
+            order = await self._create_order_record(order_id, user_id, direction, ticker, qty, price, session)
+            
+            # Сопоставление с существующими ордерами
+            if direction == OrderDirection.BUY:
+                filled, spent_money = await self._process_buy_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
+                )
                 
-                # Проверка достаточности баланса без блокировки
-                await self._check_balance_availability(user_id, direction, ticker, qty, price, session)
+                # Проверка результатов матчинга для рыночных ордеров на покупку
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на покупку {order_id} не выполнен из-за отсутствия подходящих предложений или недостаточного баланса")
+                    # Устанавливаем статус CANCELLED напрямую, так как _set_order_status вызывается далее
+                    order.status = OrderStatus.CANCELLED
                 
-                # Блокировка строк баланса и проверка достаточности после блокировки
-                rub_balance, asset_balance = await self._lock_balances(user_id, direction, ticker, qty, price, session)
+            elif direction == OrderDirection.SELL:
+                filled, earned_money = await self._process_sell_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
+                )
                 
-                # Создание записи ордера
-                order = await self._create_order_record(order_id, user_id, direction, ticker, qty, price, session)
+                # Проверка результатов матчинга для рыночных ордеров на продажу
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на продажу {order_id} не выполнен из-за отсутствия подходящих предложений")
+                    # Устанавливаем статус CANCELLED напрямую
+                    order.status = OrderStatus.CANCELLED
+            
+            # Установка статуса ордера (если он не был установлен напрямую выше)
+            if order.status != OrderStatus.CANCELLED:
+                await self._set_order_status(order, is_limit, filled, qty)
+            
+            # Обновляем количество исполненных единиц ордера
+            order.filled = filled
+            
+            # Создаем запись о транзакции, если были исполнения
+            if filled > 0:
+                # Здесь можно добавить код для создания записей в таблице транзакций
+                # ...
+                error_log(f"Ордер {order_id} исполнен на количество {filled} из {qty}")
+            
+            # Делаем коммит транзакции
+            await session.commit()
+            return order
                 
-                # Сопоставление с существующими ордерами
-                if direction == OrderDirection.BUY:
-                    filled, spent_money = await self._process_buy_matching(
-                        user_id, ticker, qty, price, rub_balance, asset_balance, session
-                    )
-                    
-                    # Проверка результатов матчинга для рыночных ордеров на покупку
-                    if not is_limit and filled == 0:
-                        error_log(f"Рыночный ордер на покупку {order_id} не выполнен из-за отсутствия подходящих предложений или недостаточного баланса")
-                        # Устанавливаем статус CANCELLED напрямую, так как _set_order_status вызывается далее
-                        order.status = OrderStatus.CANCELLED
-                    
-                elif direction == OrderDirection.SELL:
-                    filled, earned_money = await self._process_sell_matching(
-                        user_id, ticker, qty, price, rub_balance, asset_balance, session
-                    )
-                    
-                    # Проверка результатов матчинга для рыночных ордеров на продажу
-                    if not is_limit and filled == 0:
-                        error_log(f"Рыночный ордер на продажу {order_id} не выполнен из-за отсутствия подходящих предложений")
-                        # Устанавливаем статус CANCELLED напрямую
-                        order.status = OrderStatus.CANCELLED
-                
-                # Установка статуса ордера (если он не был установлен напрямую выше)
-                if order.status != OrderStatus.CANCELLED:
-                    await self._set_order_status(order, is_limit, filled, qty)
-                
-                # Обновляем количество исполненных единиц ордера
-                order.filled = filled
-                
-                # Создаем запись о транзакции, если были исполнения
-                if filled > 0:
-                    # Здесь можно добавить код для создания записей в таблице транзакций
-                    # ...
-                    error_log(f"Ордер {order_id} исполнен на количество {filled} из {qty}")
-                
-                # Делаем коммит транзакции
-                await session.commit()
-                return order
-                
-            except (DeadlockDetectedError, Exception) as e:
-                # Если это DeadlockDetectedError или другая ошибка транзакции, пробуем повторить
-                retry_count += 1
-                last_exception = e
-                
-                # Логируем информацию о повторной попытке
-                error_log(f"Ошибка при создании ордера (попытка {retry_count}/{MAX_RETRIES}): {str(e)}")
-                
-                # Откатываем транзакцию
-                try:
-                    await session.rollback()
-                except Exception as rollback_error:
-                    error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
-                
-                if retry_count < MAX_RETRIES:
-                    # Ждем перед повторной попыткой с экспоненциальной задержкой
-                    delay = INITIAL_RETRY_DELAY * (2 ** (retry_count - 1))
-                    error_log(f"Повторная попытка через {delay} секунд...")
-                    await asyncio.sleep(delay)
-                else:
-                    error_log("Достигнуто максимальное количество повторных попыток")
-                    break
-        
-        # Если все попытки неудачны, выбрасываем последнее исключение
-        error_log(f"Не удалось создать ордер после {MAX_RETRIES} попыток")
-        raise ValueError(f"Ошибка при создании ордера: {str(last_exception)}")
+        except Exception as e:
+            # Логируем ошибку
+            error_log(f"Ошибка при создании ордера: {str(e)}")
+            
+            # Откатываем транзакцию
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
+            
+            # Выбрасываем исключение дальше
+            raise ValueError(f"Ошибка при создании ордера: {str(e)}")
+        finally:
+            try:
+                await session.close()
+            except Exception as close_error:
+                error_log(f"Ошибка при закрытии сессии: {close_error}")
 
     @error_log
     async def _unblock_funds_for_cancelled_order(
@@ -654,86 +634,73 @@ class CRUDOrder(CRUDOrderBase):
         session: AsyncSession,
     ) -> Order:
         """Обновление статуса заявки с разблокировкой средств при необходимости"""
-        retry_count = 0
-        last_exception = None
-        
-        while retry_count < MAX_RETRIES:
-            try:
-                # Получаем ордер с блокировкой
-                result = await session.execute(
-                    select(Order).where(Order.id == order_id).with_for_update()
-                )
-                order = result.scalar_one_or_none()
-                
-                # Если ордер не существует
-                if not order:
-                    raise ValueError(f"Заявка с ID {order_id} не найдена")
-                
-                # Проверяем, полностью ли исполнен ордер
-                is_fully_executed = order.filled is not None and order.filled >= order.qty
-                
-                # Если ордер полностью исполнен, но его статус не EXECUTED, устанавливаем статус EXECUTED
-                if is_fully_executed and order.status != OrderStatus.EXECUTED:
-                    error_log(f"Ордер {order_id} полностью исполнен (filled={order.filled}, qty={order.qty}), устанавливаем статус EXECUTED")
-                    order.status = OrderStatus.EXECUTED
-                    await session.commit()
-                    return order
-                
-                # Если статус не изменился, просто возвращаем заявку
-                if order.status == new_status:
-                    return order
-                
-                # Если заявка уже отменена или исполнена, не позволяем менять статус
-                if order.status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
-                    raise ValueError(f"Нельзя изменить статус заявки в статусе {order.status}")
-                
-                # Проверяем, остались ли неисполненные единицы в ордере
-                remaining_qty = order.qty - (order.filled or 0)
-                if remaining_qty <= 0 and new_status == OrderStatus.CANCELLED:
-                    # Если ордер полностью исполнен, нельзя его отменить
-                    raise ValueError(f"Нельзя отменить полностью исполненный ордер. Заполнено: {order.filled} из {order.qty}")
-                
-                # Меняем статус заявки
-                old_status = order.status
-                order.status = new_status
-                
-                # Логируем изменение статуса
-                error_log(f"Изменен статус ордера {order_id} с {old_status} на {new_status}. Заполнено: {order.filled} из {order.qty}")
-                
-                # Если заявка отменяется или исполняется полностью, разблокируем средства
-                if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
-                    await self._unblock_funds_for_cancelled_order(order, session)
+        try:
+            # Получаем ордер с блокировкой
+            result = await session.execute(
+                select(Order).where(Order.id == order_id).with_for_update()
+            )
+            order = result.scalar_one_or_none()
             
-                # Делаем коммит внешней транзакции
+            # Если ордер не существует
+            if not order:
+                raise ValueError(f"Заявка с ID {order_id} не найдена")
+            
+            # Проверяем, полностью ли исполнен ордер
+            is_fully_executed = order.filled is not None and order.filled >= order.qty
+            
+            # Если ордер полностью исполнен, но его статус не EXECUTED, устанавливаем статус EXECUTED
+            if is_fully_executed and order.status != OrderStatus.EXECUTED:
+                error_log(f"Ордер {order_id} полностью исполнен (filled={order.filled}, qty={order.qty}), устанавливаем статус EXECUTED")
+                order.status = OrderStatus.EXECUTED
                 await session.commit()
                 return order
-                
-            except (DeadlockDetectedError, Exception) as e:
-                # Если это DeadlockDetectedError или другая ошибка транзакции, пробуем повторить
-                retry_count += 1
-                last_exception = e
-                
-                # Логируем информацию о повторной попытке
-                error_log(f"Ошибка при обновлении статуса ордера (попытка {retry_count}/{MAX_RETRIES}): {str(e)}")
-                
-                # Откатываем транзакцию
-                try:
-                    await session.rollback()
-                except Exception as rollback_error:
-                    error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
-                
-                if retry_count < MAX_RETRIES:
-                    # Ждем перед повторной попыткой с экспоненциальной задержкой
-                    delay = INITIAL_RETRY_DELAY * (2 ** (retry_count - 1))
-                    error_log(f"Повторная попытка через {delay} секунд...")
-                    await asyncio.sleep(delay)
-                else:
-                    error_log("Достигнуто максимальное количество повторных попыток")
-                    break
+            
+            # Если статус не изменился, просто возвращаем заявку
+            if order.status == new_status:
+                return order
+            
+            # Если заявка уже отменена или исполнена, не позволяем менять статус
+            if order.status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+                raise ValueError(f"Нельзя изменить статус заявки в статусе {order.status}")
+            
+            # Проверяем, остались ли неисполненные единицы в ордере
+            remaining_qty = order.qty - (order.filled or 0)
+            if remaining_qty <= 0 and new_status == OrderStatus.CANCELLED:
+                # Если ордер полностью исполнен, нельзя его отменить
+                raise ValueError(f"Нельзя отменить полностью исполненный ордер. Заполнено: {order.filled} из {order.qty}")
+            
+            # Меняем статус заявки
+            old_status = order.status
+            order.status = new_status
+            
+            # Логируем изменение статуса
+            error_log(f"Изменен статус ордера {order_id} с {old_status} на {new_status}. Заполнено: {order.filled} из {order.qty}")
+            
+            # Если заявка отменяется или исполняется полностью, разблокируем средства
+            if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+                await self._unblock_funds_for_cancelled_order(order, session)
         
-        # Если все попытки неудачны, выбрасываем последнее исключение
-        error_log(f"Не удалось обновить статус ордера после {MAX_RETRIES} попыток")
-        raise ValueError(f"Ошибка при обновлении статуса ордера: {str(last_exception)}")
+            # Делаем коммит внешней транзакции
+            await session.commit()
+            return order
+                
+        except Exception as e:
+            # Логируем ошибку
+            error_log(f"Ошибка при обновлении статуса ордера: {str(e)}")
+            
+            # Откатываем транзакцию
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
+            
+            # Выбрасываем исключение дальше
+            raise ValueError(f"Ошибка при обновлении статуса ордера: {str(e)}")
+        finally:
+            try:
+                await session.close()
+            except Exception as close_error:
+                error_log(f"Ошибка при закрытии сессии: {close_error}")
 
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100) -> dict:
         """Получение биржевого стакана - делегируем в специализированный модуль"""

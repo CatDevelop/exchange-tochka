@@ -12,24 +12,23 @@ class CRUDTransaction(CRUDBase[Transaction]):
 
     @error_log
     async def get_transactions_by_ticker(
-        self,
-        ticker: str,
-        session: AsyncSession,
-        limit: int = 100,
+            self,
+            ticker: str,
+            session: AsyncSession,
+            limit: int = 100,
     ) -> list[Transaction]:
         """Получение списка транзакций по тикеру"""
+
         query = select(Transaction).where(
             Transaction.ticker == ticker
         ).order_by(
             Transaction.timestamp.desc()
         ).limit(limit)
-        
+
         result = await session.execute(query)
         transactions = result.scalars().all()
-        
-        error_log(f"Получено {len(transactions)} транзакций для тикера {ticker}")
+
         return transactions
 
 
-# Создаем единственный экземпляр для использования в приложении
-transaction_crud = CRUDTransaction() 
+transaction_crud = CRUDTransaction()
