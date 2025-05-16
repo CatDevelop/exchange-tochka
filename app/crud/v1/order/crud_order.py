@@ -33,6 +33,471 @@ class CRUDOrder(CRUDOrderBase):
     """Класс для работы с ордерами"""
 
     @error_log
+    async def _check_balance_availability(
+        self, 
+        user_id: str, 
+        direction: OrderDirection, 
+        ticker: str, 
+        qty: int, 
+        price: int | None, 
+        session: AsyncSession
+    ) -> None:
+        """Проверка достаточности баланса без блокировки строк"""
+        is_limit = price is not None
+        
+        if direction == OrderDirection.BUY:
+            # Проверяем наличие RUB баланса
+            rub_check = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == "RUB"
+                )
+            )
+            rub_balance_check = rub_check.scalar_one_or_none()
+            
+            if is_limit:
+                # Для лимитных ордеров проверяем точное соответствие требуемой суммы
+                if not rub_balance_check or rub_balance_check.amount - rub_balance_check.blocked_amount < qty * price:
+                    available = rub_balance_check.amount - rub_balance_check.blocked_amount if rub_balance_check else 0
+                    required = qty * price
+                    error_msg = f"Недостаточно средств для создания ордера на покупку. Требуется: {required} RUB, доступно: {available} RUB"
+                    error_log(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                # Для рыночных ордеров проверяем наличие хотя бы положительного баланса
+                if not rub_balance_check or rub_balance_check.amount - rub_balance_check.blocked_amount <= 0:
+                    available = rub_balance_check.amount - rub_balance_check.blocked_amount if rub_balance_check else 0
+                    error_msg = f"Недостаточно средств для создания рыночного ордера на покупку. Доступно: {available} RUB"
+                    error_log(error_msg)
+                    raise ValueError(error_msg)
+        
+        elif direction == OrderDirection.SELL:
+            # Проверяем наличие достаточного количества актива для продажи
+            asset_check = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == ticker
+                )
+            )
+            asset_balance_check = asset_check.scalar_one_or_none()
+            
+            if not asset_balance_check or asset_balance_check.amount - asset_balance_check.blocked_amount < qty:
+                available = asset_balance_check.amount - asset_balance_check.blocked_amount if asset_balance_check else 0
+                error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available} {ticker}"
+                error_log(error_msg)
+                raise ValueError(error_msg)
+
+    @error_log
+    async def _lock_balances(
+        self, 
+        user_id: str, 
+        direction: OrderDirection, 
+        ticker: str, 
+        qty: int, 
+        price: int | None, 
+        session: AsyncSession
+    ) -> tuple:
+        """Блокировка строк баланса и проверка достаточности средств после блокировки"""
+        is_limit = price is not None
+        combined_hash = int(hash(f"{user_id}:{ticker}")) % 2147483647  # Ограничиваем значение хеша для PostgreSQL
+        await session.execute(text(f"SELECT pg_advisory_xact_lock({combined_hash})"))
+        error_log(f"Получена advisory lock для user_id={user_id}, ticker={ticker}, hash={combined_hash}")
+        
+        if direction == OrderDirection.BUY:
+            # Блокируем RUB (для покупки) и актив (для получения)
+            rub_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == "RUB"
+                ).with_for_update()
+            )
+            rub_balance = rub_balance.scalar_one_or_none()
+            
+            asset_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == ticker
+                ).with_for_update()
+            )
+            asset_balance = asset_balance.scalar_one_or_none()
+            
+            # Повторная проверка баланса после блокировки (на случай изменений)
+            # Только для лимитных ордеров, так как для рыночных цена неизвестна
+            if is_limit and (not rub_balance or rub_balance.amount - rub_balance.blocked_amount < qty * price):
+                available = rub_balance.amount - rub_balance.blocked_amount if rub_balance else 0
+                required = qty * price
+                error_msg = f"Недостаточно средств для создания ордера на покупку. Требуется: {required} RUB, доступно: {available} RUB"
+                error_log(error_msg)
+                raise ValueError(error_msg)
+            
+            # Блокируем средства на покупку (только для лимитных ордеров)
+            if is_limit:
+                rub_balance.blocked_amount += qty * price
+                error_log(f"Заблокировано {qty * price} RUB для покупки {qty} {ticker}")
+            
+            return rub_balance, asset_balance
+        
+        elif direction == OrderDirection.SELL:
+            # Блокируем актив (для продажи) и RUB (для получения)
+            asset_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == ticker
+                ).with_for_update()
+            )
+            asset_balance = asset_balance.scalar_one_or_none()
+            
+            rub_balance = await session.execute(
+                select(Balance).where(
+                    Balance.user_id == user_id, 
+                    Balance.ticker == "RUB"
+                ).with_for_update()
+            )
+            rub_balance = rub_balance.scalar_one_or_none()
+            
+            # Повторная проверка баланса после блокировки (на случай изменений)
+            if not asset_balance or asset_balance.amount - asset_balance.blocked_amount < qty:
+                available = asset_balance.amount - asset_balance.blocked_amount if asset_balance else 0
+                error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available} {ticker}"
+                error_log(error_msg)
+                raise ValueError(error_msg)
+            
+            # Блокируем активы для продажи
+            asset_balance.blocked_amount += qty
+            error_log(f"Заблокировано {qty} {ticker} для продажи")
+            
+            return rub_balance, asset_balance
+
+    @error_log
+    async def _create_order_record(
+        self, 
+        order_id: str, 
+        user_id: str, 
+        direction: OrderDirection,
+        ticker: str,
+        qty: int,
+        price: int | None,
+        session: AsyncSession
+    ) -> Order:
+        """Создание записи ордера в базе данных"""
+        order = Order(
+            id=order_id,
+            status=OrderStatus.NEW,
+            user_id=user_id,
+            direction=direction,
+            ticker=ticker,
+            qty=qty,
+            price=price,
+            filled=0,
+        )
+        session.add(order)
+        await session.flush()  # Фиксируем в БД, но без коммита
+        return order
+
+    @error_log
+    async def _process_buy_matching(
+        self, 
+        user_id: str,
+        ticker: str, 
+        qty: int, 
+        price: int | None, 
+        rub_balance: Balance, 
+        asset_balance: Balance, 
+        session: AsyncSession
+    ) -> tuple:
+        """Обработка сопоставления ордера на покупку с существующими ордерами на продажу"""
+        is_limit = price is not None
+        
+        # Для рыночных ордеров проверяем, есть ли вообще предложения на продажу
+        if not is_limit:
+            # Проверяем наличие ордеров на продажу для данного тикера
+            sell_count = await session.execute(
+                select(func.count()).where(
+                    Order.ticker == ticker,
+                    Order.direction == OrderDirection.SELL,
+                    Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
+                )
+            )
+            sell_count = sell_count.scalar_one()
+            
+            if sell_count == 0:
+                error_log(f"Нет активных ордеров на продажу для тикера {ticker}. Рыночный ордер на покупку отменен.")
+                return 0, 0
+        
+        matched_orders = await match_sell_orders(ticker, qty, price, session)
+        filled = matched_orders["filled_qty"]
+        spent_money = matched_orders["spent_money"]
+        
+        # Для рыночных ордеров проверяем достаточность средств после получения стоимости
+        if not is_limit and filled > 0:
+            if not rub_balance or rub_balance.amount < spent_money:
+                available = rub_balance.amount if rub_balance else 0
+                error_msg = f"Недостаточно средств для исполнения рыночного ордера на покупку. Требуется: {spent_money} RUB, доступно: {available} RUB"
+                error_log(error_msg)
+                # Создаем CANCELLED ордер, так как не хватает средств
+                return 0, 0  # Возвращаем 0, 0, чтобы ордер был помечен как CANCELLED
+        
+        if filled > 0:
+            # Обновляем балансы для каждого продавца, с которым был матчинг
+            for seller_order_id, execution_info in matched_orders.get("executions", {}).items():
+                await self._update_seller_balance_buy_match(
+                    execution_info["user_id"],
+                    ticker,
+                    execution_info["qty"],
+                    execution_info["price"],
+                    session
+                )
+            
+            # Обновляем баланс покупателя
+            if is_limit:
+                # Разблокируем потраченные средства для лимитного ордера
+                rub_balance.blocked_amount -= min(spent_money, rub_balance.blocked_amount)
+            
+            # Убедимся, что не уйдем в отрицательный баланс для рыночных ордеров
+            if rub_balance.amount < spent_money:
+                error_log(f"Попытка списать {spent_money} RUB при доступном балансе {rub_balance.amount} RUB - ограничиваем списание")
+                spent_money = rub_balance.amount
+                
+            rub_balance.amount -= spent_money  # Списываем потраченные средства
+            
+            if asset_balance:
+                asset_balance.amount += filled  # Добавляем купленные активы
+            else:
+                # Создаем новый баланс активов
+                new_asset_balance = Balance(
+                    user_id=user_id,
+                    ticker=ticker,
+                    amount=filled,
+                    blocked_amount=0
+                )
+                session.add(new_asset_balance)
+        
+        # Если это рыночная заявка или полностью исполненная лимитная
+        if is_limit and (filled == qty or not is_limit):
+            # Если осталась блокировка, разблокируем лишнее (только для лимитных ордеров)
+            if rub_balance.blocked_amount > 0 and filled < qty:
+                remaining_block = qty * price - spent_money
+                # Не разблокируем больше, чем есть в blocked_amount
+                actual_unblock = min(remaining_block, rub_balance.blocked_amount)
+                rub_balance.blocked_amount -= actual_unblock
+                error_log(f"Разблокировано {actual_unblock} RUB после исполнения/отмены ордера")
+        
+        return filled, spent_money
+
+    @error_log
+    async def _update_seller_balance_buy_match(
+        self, 
+        seller_id: str, 
+        ticker: str, 
+        executed_qty: int, 
+        executed_price: int, 
+        session: AsyncSession
+    ) -> None:
+        """Обновление баланса продавца при сопоставлении его ордера на продажу"""
+        executed_amount = executed_qty * executed_price
+        
+        # Блокируем баланс продавца для обновления
+        seller_asset_balance = await session.execute(
+            select(Balance).where(
+                Balance.user_id == seller_id, 
+                Balance.ticker == ticker
+            ).with_for_update()
+        )
+        seller_asset_balance = seller_asset_balance.scalar_one_or_none()
+        
+        seller_rub_balance = await session.execute(
+            select(Balance).where(
+                Balance.user_id == seller_id, 
+                Balance.ticker == "RUB"
+            ).with_for_update()
+        )
+        seller_rub_balance = seller_rub_balance.scalar_one_or_none()
+        
+        # Обновляем баланс продавца
+        if seller_asset_balance:
+            # Разблокируем активы, но не больше, чем заблокировано
+            seller_asset_balance.blocked_amount -= min(executed_qty, seller_asset_balance.blocked_amount)
+            
+            # Убедимся, что не уйдем в отрицательный баланс
+            if seller_asset_balance.amount < executed_qty:
+                error_log(f"Предотвращено отрицательное значение баланса активов: available={seller_asset_balance.amount}, required={executed_qty}")
+                executed_qty = seller_asset_balance.amount
+                
+            seller_asset_balance.amount -= executed_qty
+            error_log(f"Списано у продавца: {executed_qty} {ticker}, новый баланс: {seller_asset_balance.amount} {ticker}")
+        
+        if seller_rub_balance:
+            seller_rub_balance.amount += executed_amount
+            error_log(f"Добавлено продавцу: {executed_amount} RUB, новый баланс: {seller_rub_balance.amount} RUB")
+        else:
+            # Создаем новый баланс если не существует
+            new_rub_balance = Balance(
+                user_id=seller_id,
+                ticker="RUB",
+                amount=executed_amount,
+                blocked_amount=0
+            )
+            session.add(new_rub_balance)
+            error_log(f"Создан новый баланс RUB для продавца: {executed_amount} RUB")
+
+    @error_log
+    async def _process_sell_matching(
+        self, 
+        user_id: str,
+        ticker: str, 
+        qty: int, 
+        price: int | None, 
+        rub_balance: Balance, 
+        asset_balance: Balance, 
+        session: AsyncSession
+    ) -> tuple:
+        """Обработка сопоставления ордера на продажу с существующими ордерами на покупку"""
+        is_limit = price is not None
+        
+        # Для рыночных ордеров проверяем, есть ли вообще предложения на покупку
+        if not is_limit:
+            # Проверяем наличие ордеров на покупку для данного тикера
+            buy_count = await session.execute(
+                select(func.count()).where(
+                    Order.ticker == ticker,
+                    Order.direction == OrderDirection.BUY,
+                    Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
+                )
+            )
+            buy_count = buy_count.scalar_one()
+            
+            if buy_count == 0:
+                error_log(f"Нет активных ордеров на покупку для тикера {ticker}. Рыночный ордер на продажу отменен.")
+                return 0, 0
+        
+        matched_orders = await match_buy_orders(ticker, qty, price, session)
+        filled = matched_orders["filled_qty"]
+        earned_money = matched_orders["earned_money"]
+        
+        if filled > 0:
+            # Обновляем балансы для каждого покупателя, с которым был матчинг
+            for buyer_order_id, execution_info in matched_orders.get("executions", {}).items():
+                await self._update_buyer_balance_sell_match(
+                    execution_info["user_id"],
+                    ticker,
+                    execution_info["qty"],
+                    execution_info["price"],
+                    session
+                )
+            
+            # Обновляем баланс продавца
+            asset_balance.blocked_amount -= min(filled, asset_balance.blocked_amount)  # Разблокируем использованные активы, но не больше, чем заблокировано
+            asset_balance.amount -= filled  # Списываем проданные активы
+            
+            # Логируем обновление баланса продавца
+            error_log(f"Обновление баланса продавца: списано {filled} {ticker}, осталось {asset_balance.amount} (заблокировано {asset_balance.blocked_amount})")
+            
+            if rub_balance:
+                rub_balance.amount += earned_money  # Добавляем полученные средства
+                error_log(f"Добавлено на счет продавца {earned_money} RUB, новый баланс: {rub_balance.amount} RUB")
+            else:
+                # Создаем новый баланс RUB
+                new_rub_balance = Balance(
+                    user_id=user_id,
+                    ticker="RUB",
+                    amount=earned_money,
+                    blocked_amount=0
+                )
+                session.add(new_rub_balance)
+                error_log(f"Создан новый счет для продавца с балансом {earned_money} RUB")
+        
+        # Если это рыночная заявка или полностью исполненная лимитная
+        if not is_limit or filled == qty:
+            # Если осталась блокировка, разблокируем лишнее
+            if asset_balance.blocked_amount > 0 and (not is_limit or filled < qty):
+                remaining_block = qty - filled
+                # Не разблокируем больше, чем есть в blocked_amount
+                actual_unblock = min(remaining_block, asset_balance.blocked_amount)
+                asset_balance.blocked_amount -= actual_unblock
+                error_log(f"Разблокировано {actual_unblock} {ticker} после исполнения/отмены ордера")
+        
+        return filled, earned_money
+
+    @error_log
+    async def _update_buyer_balance_sell_match(
+        self, 
+        buyer_id: str, 
+        ticker: str, 
+        executed_qty: int, 
+        executed_price: int, 
+        session: AsyncSession
+    ) -> None:
+        """Обновление баланса покупателя при сопоставлении его ордера на покупку"""
+        executed_amount = executed_qty * executed_price
+        
+        # Блокируем баланс покупателя для обновления
+        buyer_asset_balance = await session.execute(
+            select(Balance).where(
+                Balance.user_id == buyer_id, 
+                Balance.ticker == ticker
+            ).with_for_update()
+        )
+        buyer_asset_balance = buyer_asset_balance.scalar_one_or_none()
+        
+        buyer_rub_balance = await session.execute(
+            select(Balance).where(
+                Balance.user_id == buyer_id, 
+                Balance.ticker == "RUB"
+            ).with_for_update()
+        )
+        buyer_rub_balance = buyer_rub_balance.scalar_one_or_none()
+        
+        # Обновляем баланс покупателя
+        if buyer_rub_balance:
+            # Разблокируем средства, но не больше, чем заблокировано
+            buyer_rub_balance.blocked_amount -= min(executed_amount, buyer_rub_balance.blocked_amount)
+            
+            # Убедимся, что не уйдем в отрицательный баланс
+            if buyer_rub_balance.amount < executed_amount:
+                error_log(f"Предотвращено отрицательное значение баланса: available={buyer_rub_balance.amount}, required={executed_amount}")
+                executed_amount = buyer_rub_balance.amount
+                
+            buyer_rub_balance.amount -= executed_amount
+            error_log(f"Списано у покупателя: {executed_amount} RUB, новый баланс: {buyer_rub_balance.amount} RUB")
+        
+        if buyer_asset_balance:
+            buyer_asset_balance.amount += executed_qty
+            error_log(f"Добавлено покупателю: {executed_qty} {ticker}, новый баланс: {buyer_asset_balance.amount} {ticker}")
+        else:
+            # Создаем новый баланс если не существует
+            new_asset_balance = Balance(
+                user_id=buyer_id,
+                ticker=ticker,
+                amount=executed_qty,
+                blocked_amount=0
+            )
+            session.add(new_asset_balance)
+            error_log(f"Создан новый баланс для покупателя: {executed_qty} {ticker}")
+
+    @error_log
+    async def _set_order_status(
+        self, 
+        order: Order, 
+        is_limit: bool, 
+        filled: int, 
+        qty: int
+    ) -> None:
+        """Установка статуса ордера в зависимости от результатов сопоставления"""
+        if not is_limit:
+            if filled == 0:
+                order.status = OrderStatus.CANCELLED
+            elif filled < qty:
+                order.status = OrderStatus.PARTIALLY_EXECUTED
+            else:
+                order.status = OrderStatus.EXECUTED
+        else:
+            if filled == qty:
+                order.status = OrderStatus.EXECUTED
+            elif filled > 0:
+                order.status = OrderStatus.PARTIALLY_EXECUTED
+            # Иначе статус остается NEW
+
+    @error_log
     async def create_order(
             self,
             user_id: str,
@@ -53,310 +518,41 @@ class CRUDOrder(CRUDOrderBase):
         earned_money = 0
         
         try:
-            # Сначала проверяем достаточность баланса без блокировки строк
-            # Это делается вне транзакции
-            if direction == OrderDirection.BUY and is_limit:
-                # Проверяем наличие достаточного количества RUB для покупки
-                # Для рыночных ордеров на покупку проверка не нужна, так как цена неизвестна
-                rub_check = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == "RUB"
-                    )
-                )
-                rub_balance_check = rub_check.scalar_one_or_none()
-                
-                if not rub_balance_check or rub_balance_check.amount - rub_balance_check.blocked_amount < qty * price:
-                    available = rub_balance_check.amount - rub_balance_check.blocked_amount if rub_balance_check else 0
-                    required = qty * price
-                    error_msg = f"Недостаточно средств для создания ордера на покупку. Требуется: {required} RUB, доступно: {available} RUB"
-                    error_log(error_msg)
-                    raise ValueError(error_msg)
+            # Проверка достаточности баланса без блокировки
+            await self._check_balance_availability(user_id, direction, ticker, qty, price, session)
             
-            elif direction == OrderDirection.SELL:
-                # Проверяем наличие достаточного количества актива для продажи
-                asset_check = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == ticker
-                    )
-                )
-                asset_balance_check = asset_check.scalar_one_or_none()
-                
-                if not asset_balance_check or asset_balance_check.amount - asset_balance_check.blocked_amount < qty:
-                    available = asset_balance_check.amount - asset_balance_check.blocked_amount if asset_balance_check else 0
-                    error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available} {ticker}"
-                    error_log(error_msg)
-                    raise ValueError(error_msg)
+            # Блокировка строк баланса и проверка достаточности после блокировки
+            rub_balance, asset_balance = await self._lock_balances(user_id, direction, ticker, qty, price, session)
             
-            # Устанавливаем advisory lock для пользователя и тикера
-            # Это поможет избежать deadlock при сложных операциях с несколькими балансами
-            combined_hash = int(hash(f"{user_id}:{ticker}")) % 2147483647  # Ограничиваем значение хеша для PostgreSQL
-            await session.execute(text(f"SELECT pg_advisory_xact_lock({combined_hash})"))
-            error_log(f"Получена advisory lock для user_id={user_id}, ticker={ticker}, hash={combined_hash}")
+            # Создание записи ордера
+            order = await self._create_order_record(order_id, user_id, direction, ticker, qty, price, session)
             
-            # Блокируем строки баланса для нужных валют
+            # Сопоставление с существующими ордерами
             if direction == OrderDirection.BUY:
-                # Блокируем RUB (для покупки) и актив (для получения)
-                rub_balance = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == "RUB"
-                    ).with_for_update()
+                filled, spent_money = await self._process_buy_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
                 )
-                rub_balance = rub_balance.scalar_one_or_none()
                 
-                asset_balance = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == ticker
-                    ).with_for_update()
-                )
-                asset_balance = asset_balance.scalar_one_or_none()
-                
-                # Повторная проверка баланса после блокировки (на случай изменений)
-                # Только для лимитных ордеров, так как для рыночных цена неизвестна
-                if is_limit and (not rub_balance or rub_balance.amount - rub_balance.blocked_amount < qty * price):
-                    available = rub_balance.amount - rub_balance.blocked_amount if rub_balance else 0
-                    required = qty * price
-                    error_msg = f"Недостаточно средств для создания ордера на покупку. Требуется: {required} RUB, доступно: {available} RUB"
-                    error_log(error_msg)
-                    raise ValueError(error_msg)
-                
-                # Блокируем средства на покупку (только для лимитных ордеров)
-                if is_limit:
-                    rub_balance.blocked_amount += qty * price
-                    error_log(f"Заблокировано {qty * price} RUB для покупки {qty} {ticker}")
+                # Проверка результатов матчинга для рыночных ордеров на покупку
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на покупку {order_id} не выполнен из-за отсутствия подходящих предложений или недостаточного баланса")
+                    # Устанавливаем статус CANCELLED напрямую, так как _set_order_status вызывается далее
+                    order.status = OrderStatus.CANCELLED
                 
             elif direction == OrderDirection.SELL:
-                # Блокируем актив (для продажи) и RUB (для получения)
-                asset_balance = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == ticker
-                    ).with_for_update()
+                filled, earned_money = await self._process_sell_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
                 )
-                asset_balance = asset_balance.scalar_one_or_none()
                 
-                rub_balance = await session.execute(
-                    select(Balance).where(
-                        Balance.user_id == user_id, 
-                        Balance.ticker == "RUB"
-                    ).with_for_update()
-                )
-                rub_balance = rub_balance.scalar_one_or_none()
-                
-                # Повторная проверка баланса после блокировки (на случай изменений)
-                if not asset_balance or asset_balance.amount - asset_balance.blocked_amount < qty:
-                    available = asset_balance.amount - asset_balance.blocked_amount if asset_balance else 0
-                    error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available} {ticker}"
-                    error_log(error_msg)
-                    raise ValueError(error_msg)
-                
-                # Блокируем активы для продажи
-                asset_balance.blocked_amount += qty
-                error_log(f"Заблокировано {qty} {ticker} для продажи")
+                # Проверка результатов матчинга для рыночных ордеров на продажу
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на продажу {order_id} не выполнен из-за отсутствия подходящих предложений")
+                    # Устанавливаем статус CANCELLED напрямую
+                    order.status = OrderStatus.CANCELLED
             
-            # Создаем запись ордера
-            order = Order(
-                id=order_id,
-                status=OrderStatus.NEW,
-                user_id=user_id,
-                direction=direction,
-                ticker=ticker,
-                qty=qty,
-                price=price,
-                filled=0,
-            )
-            session.add(order)
-            await session.flush()  # Фиксируем в БД, но без коммита
-            
-            # Пытаемся исполнить ордер сразу (матчинг)
-            if direction == OrderDirection.BUY:
-                # Пытаемся сопоставить с заявками на продажу
-                matched_orders = await match_sell_orders(ticker, qty, price, session)
-                filled = matched_orders["filled_qty"]
-                spent_money = matched_orders["spent_money"]
-                
-                if filled > 0:
-                    # Обновляем балансы для каждого продавца, с которым был матчинг
-                    for seller_order_id, execution_info in matched_orders.get("executions", {}).items():
-                        seller_id = execution_info["user_id"]
-                        executed_qty = execution_info["qty"]
-                        executed_price = execution_info["price"]
-                        executed_amount = executed_qty * executed_price
-                        
-                        # Блокируем баланс продавца для обновления
-                        seller_asset_balance = await session.execute(
-                            select(Balance).where(
-                                Balance.user_id == seller_id, 
-                                Balance.ticker == ticker
-                            ).with_for_update()
-                        )
-                        seller_asset_balance = seller_asset_balance.scalar_one_or_none()
-                        
-                        seller_rub_balance = await session.execute(
-                            select(Balance).where(
-                                Balance.user_id == seller_id, 
-                                Balance.ticker == "RUB"
-                            ).with_for_update()
-                        )
-                        seller_rub_balance = seller_rub_balance.scalar_one_or_none()
-                        
-                        # Обновляем баланс продавца
-                        if seller_asset_balance:
-                            seller_asset_balance.blocked_amount -= min(executed_qty, seller_asset_balance.blocked_amount)  # Не уходим в минус
-                            seller_asset_balance.amount -= executed_qty
-                        
-                        if seller_rub_balance:
-                            seller_rub_balance.amount += executed_amount
-                        else:
-                            # Создаем новый баланс если не существует
-                            new_rub_balance = Balance(
-                                user_id=seller_id,
-                                ticker="RUB",
-                                amount=executed_amount,
-                                blocked_amount=0
-                            )
-                            session.add(new_rub_balance)
-                    
-                    # Обновляем баланс покупателя
-                    if is_limit:
-                        # Разблокируем потраченные средства для лимитного ордера
-                        rub_balance.blocked_amount -= min(spent_money, rub_balance.blocked_amount)  # Не уходим в минус
-                    
-                    rub_balance.amount -= spent_money  # Списываем потраченные средства
-                    
-                    if asset_balance:
-                        asset_balance.amount += filled  # Добавляем купленные активы
-                    else:
-                        # Создаем новый баланс активов
-                        new_asset_balance = Balance(
-                            user_id=user_id,
-                            ticker=ticker,
-                            amount=filled,
-                            blocked_amount=0
-                        )
-                        session.add(new_asset_balance)
-                
-                # Если это рыночная заявка или полностью исполненная лимитная
-                if is_limit and (filled == qty or not is_limit):
-                    # Если осталась блокировка, разблокируем лишнее (только для лимитных ордеров)
-                    if rub_balance.blocked_amount > 0 and filled < qty:
-                        remaining_block = qty * price - spent_money
-                        # Не разблокируем больше, чем есть в blocked_amount
-                        actual_unblock = min(remaining_block, rub_balance.blocked_amount)
-                        rub_balance.blocked_amount -= actual_unblock
-                        error_log(f"Разблокировано {actual_unblock} RUB после исполнения/отмены ордера")
-                
-                # Устанавливаем статус ордера
-                if not is_limit:
-                    if filled == 0:
-                        order.status = OrderStatus.CANCELLED
-                    elif filled < qty:
-                        order.status = OrderStatus.PARTIALLY_EXECUTED
-                    else:
-                        order.status = OrderStatus.EXECUTED
-                else:
-                    if filled == qty:
-                        order.status = OrderStatus.EXECUTED
-                    elif filled > 0:
-                        order.status = OrderStatus.PARTIALLY_EXECUTED
-                    # Иначе статус остается NEW
-            
-            elif direction == OrderDirection.SELL:
-                # Пытаемся сопоставить с заявками на покупку
-                matched_orders = await match_buy_orders(ticker, qty, price, session)
-                filled = matched_orders["filled_qty"]
-                earned_money = matched_orders["earned_money"]
-                
-                if filled > 0:
-                    # Обновляем балансы для каждого покупателя, с которым был матчинг
-                    for buyer_order_id, execution_info in matched_orders.get("executions", {}).items():
-                        buyer_id = execution_info["user_id"]
-                        executed_qty = execution_info["qty"]
-                        executed_price = execution_info["price"]
-                        executed_amount = executed_qty * executed_price
-                        
-                        # Блокируем баланс покупателя для обновления
-                        buyer_asset_balance = await session.execute(
-                            select(Balance).where(
-                                Balance.user_id == buyer_id, 
-                                Balance.ticker == ticker
-                            ).with_for_update()
-                        )
-                        buyer_asset_balance = buyer_asset_balance.scalar_one_or_none()
-                        
-                        buyer_rub_balance = await session.execute(
-                            select(Balance).where(
-                                Balance.user_id == buyer_id, 
-                                Balance.ticker == "RUB"
-                            ).with_for_update()
-                        )
-                        buyer_rub_balance = buyer_rub_balance.scalar_one_or_none()
-                        
-                        # Обновляем баланс покупателя
-                        if buyer_rub_balance:
-                            buyer_rub_balance.blocked_amount -= min(executed_amount, buyer_rub_balance.blocked_amount)  # Не уходим в минус
-                            buyer_rub_balance.amount -= executed_amount
-                        
-                        if buyer_asset_balance:
-                            buyer_asset_balance.amount += executed_qty
-                        else:
-                            # Создаем новый баланс если не существует
-                            new_asset_balance = Balance(
-                                user_id=buyer_id,
-                                ticker=ticker,
-                                amount=executed_qty,
-                                blocked_amount=0
-                            )
-                            session.add(new_asset_balance)
-                    
-                    # Обновляем баланс продавца
-                    asset_balance.blocked_amount -= min(filled, asset_balance.blocked_amount)  # Разблокируем использованные активы, но не больше, чем заблокировано
-                    asset_balance.amount -= filled  # Списываем проданные активы
-                    
-                    # Логируем обновление баланса продавца
-                    error_log(f"Обновление баланса продавца: списано {filled} {ticker}, осталось {asset_balance.amount} (заблокировано {asset_balance.blocked_amount})")
-                    
-                    if rub_balance:
-                        rub_balance.amount += earned_money  # Добавляем полученные средства
-                        error_log(f"Добавлено на счет продавца {earned_money} RUB, новый баланс: {rub_balance.amount} RUB")
-                    else:
-                        # Создаем новый баланс RUB
-                        new_rub_balance = Balance(
-                            user_id=user_id,
-                            ticker="RUB",
-                            amount=earned_money,
-                            blocked_amount=0
-                        )
-                        session.add(new_rub_balance)
-                        error_log(f"Создан новый счет для продавца с балансом {earned_money} RUB")
-                
-                # Если это рыночная заявка или полностью исполненная лимитная
-                if not is_limit or filled == qty:
-                    # Если осталась блокировка, разблокируем лишнее
-                    if asset_balance.blocked_amount > 0 and (not is_limit or filled < qty):
-                        remaining_block = qty - filled
-                        # Не разблокируем больше, чем есть в blocked_amount
-                        actual_unblock = min(remaining_block, asset_balance.blocked_amount)
-                        asset_balance.blocked_amount -= actual_unblock
-                        error_log(f"Разблокировано {actual_unblock} {ticker} после исполнения/отмены ордера")
-                
-                # Устанавливаем статус ордера
-                if not is_limit:
-                    if filled == 0:
-                        order.status = OrderStatus.CANCELLED
-                    elif filled < qty:
-                        order.status = OrderStatus.PARTIALLY_EXECUTED
-                    else:
-                        order.status = OrderStatus.EXECUTED
-                else:
-                    if filled == qty:
-                        order.status = OrderStatus.EXECUTED
-                    elif filled > 0:
-                        order.status = OrderStatus.PARTIALLY_EXECUTED
-                    # Иначе статус остается NEW
+            # Установка статуса ордера (если он не был установлен напрямую выше)
+            if order.status != OrderStatus.CANCELLED:
+                await self._set_order_status(order, is_limit, filled, qty)
             
             # Обновляем количество исполненных единиц ордера
             order.filled = filled
@@ -378,6 +574,36 @@ class CRUDOrder(CRUDOrderBase):
             except Exception as rollback_error:
                 error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
             raise ValueError(f"Ошибка при создании ордера: {str(e)}")
+
+    @error_log
+    async def _unblock_funds_for_cancelled_order(
+        self,
+        order: Order,
+        session: AsyncSession,
+    ) -> None:
+        """Разблокировка средств при отмене или полном исполнении заявки"""
+        if order.direction == OrderDirection.BUY:
+            # Разблокируем деньги у покупателя только для лимитных ордеров
+            # Для рыночных ордеров price будет None
+            remaining_qty = order.qty - (order.filled or 0)
+            if remaining_qty > 0 and order.price is not None:
+                remaining_cost = remaining_qty * order.price
+                try:
+                    await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
+                    error_log(f"Разблокировано средств: {remaining_cost} RUB для пользователя {order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке средств: {str(e)}")
+        
+        elif order.direction == OrderDirection.SELL:
+            # Разблокируем активы у продавца только для лимитных ордеров
+            # Для рыночных ордеров нет заблокированных активов
+            remaining_qty = order.qty - (order.filled or 0)
+            if remaining_qty > 0 and order.price is not None:
+                try:
+                    await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
+                    error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке активов: {str(e)}")
 
     @error_log
     async def update_order_status(
@@ -411,29 +637,8 @@ class CRUDOrder(CRUDOrderBase):
             order.status = new_status
             
             # Если заявка отменяется или исполняется полностью, разблокируем средства
-            if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:                
-                if order.direction == OrderDirection.BUY:
-                    # Разблокируем деньги у покупателя только для лимитных ордеров
-                    # Для рыночных ордеров price будет None
-                    remaining_qty = order.qty - (order.filled or 0)
-                    if remaining_qty > 0 and order.price is not None:
-                        remaining_cost = remaining_qty * order.price
-                        try:
-                            await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
-                            error_log(f"Разблокировано средств: {remaining_cost} RUB для пользователя {order.user_id}")
-                        except ValueError as e:
-                            error_log(f"Ошибка при разблокировке средств: {str(e)}")
-                
-                elif order.direction == OrderDirection.SELL:
-                    # Разблокируем активы у продавца только для лимитных ордеров
-                    # Для рыночных ордеров нет заблокированных активов
-                    remaining_qty = order.qty - (order.filled or 0)
-                    if remaining_qty > 0 and order.price is not None:
-                        try:
-                            await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
-                            error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
-                        except ValueError as e:
-                            error_log(f"Ошибка при разблокировке активов: {str(e)}")
+            if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+                await self._unblock_funds_for_cancelled_order(order, session)
         
             # Делаем коммит внешней транзакции
             await session.commit()
