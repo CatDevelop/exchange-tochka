@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logs.logs import error_log
 from app.models import Order, Transaction
 from app.models.order import OrderDirection, OrderStatus
-from app.crud.v1.balance import balance_crud
 
 from app.crud.v1.order.balance_operations import (
     add_funds, 
     add_assets, 
-    deduct_assets
+    deduct_assets,
+    unblock_funds,
+    unblock_assets
 )
 
 
@@ -68,7 +69,7 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
         # Разблокируем активы продавца, если это лимитная заявка
         if sell_order.price is not None:
             try:
-                await balance_crud.unblock_assets(sell_order.user_id, ticker, to_fill, session)
+                await unblock_assets(sell_order.user_id, ticker, to_fill, session)
                 error_log(f"Разблокировано активов: {to_fill} {ticker} для пользователя {sell_order.user_id}")
             except ValueError as e:
                 error_log(f"Ошибка при разблокировке активов: {str(e)}")
@@ -158,7 +159,7 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
         # Разблокируем и списываем деньги у покупателя, если это лимитная заявка
         if buy_order.price is not None:
             try:
-                await balance_crud.unblock_funds(buy_order.user_id, "RUB", order_cost, session)
+                await unblock_funds(buy_order.user_id, "RUB", order_cost, session)
                 error_log(f"Разблокировано средств: {order_cost} RUB для пользователя {buy_order.user_id}")
             except ValueError as e:
                 error_log(f"Ошибка при разблокировке средств: {str(e)}")

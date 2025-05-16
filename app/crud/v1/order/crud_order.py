@@ -18,7 +18,10 @@ from app.crud.v1.order.balance_operations import (
     add_assets,
     add_funds,
     deduct_funds,
-    deduct_assets
+    deduct_assets,
+    get_global_lock,
+    unblock_funds,
+    unblock_assets
 )
 from app.crud.v1.order.matching_engine import match_sell_orders, match_buy_orders
 from app.crud.v1.order.market_data import get_orderbook
@@ -88,6 +91,126 @@ class CRUDOrder(CRUDOrderBase):
                 error_msg = f"Недостаточно средств для создания ордера на продажу. Требуется: {qty} {ticker}, доступно: {available} {ticker}"
                 error_log(error_msg)
                 raise ValueError(error_msg)
+
+    @error_log
+    async def create_order(
+            self,
+            user_id: str,
+            body: LimitOrderBody | MarketOrderBody,
+            session: AsyncSession,
+    ) -> Order:
+        """Создание нового ордера с учетом сопоставления с существующими ордерами"""
+        try:
+            # Получаем глобальную блокировку для всех операций пользователя
+            await get_global_lock(user_id, session)
+            error_log(f"Получена глобальная блокировка для пользователя {user_id}")
+            
+            # Инициализируем параметры ордера
+            order_id = str(uuid4())
+            price = getattr(body, 'price', None)
+            is_limit = price is not None
+            direction = body.direction
+            ticker = body.ticker
+            qty = body.qty
+        
+            filled = 0
+            spent_money = 0
+            earned_money = 0
+            
+            # Проверка достаточности баланса без блокировки
+            await self._check_balance_availability(user_id, direction, ticker, qty, price, session)
+            
+            # Сначала создаем запись ордера, затем блокируем балансы
+            # Это устанавливает единый порядок блокировок: сначала Order, потом Balance
+            order = Order(
+                id=order_id,
+                status=OrderStatus.NEW,
+                user_id=user_id,
+                direction=direction,
+                ticker=ticker,
+                qty=qty,
+                price=price,
+                filled=0,
+            )
+            session.add(order)
+            await session.flush()  # Фиксируем в БД, но без коммита
+            error_log(f"Создан новый ордер {order_id}")
+            
+            # Блокируем балансы после создания ордера
+            if direction == OrderDirection.BUY and is_limit:
+                # Блокируем средства для лимитного ордера на покупку
+                await block_funds(user_id, qty * price, "RUB", session)
+            elif direction == OrderDirection.SELL:
+                # Блокируем активы для ордера на продажу
+                await block_assets(user_id, qty, ticker, session)
+            
+            # Сопоставление с существующими ордерами
+            rub_balance = None
+            asset_balance = None
+            
+            # Получаем записи баланса с блокировкой для дальнейших операций
+            if direction == OrderDirection.BUY or ticker == "RUB":
+                rub_result = await session.execute(
+                    select(Balance).where(
+                        Balance.user_id == user_id, 
+                        Balance.ticker == "RUB"
+                    ).with_for_update()
+                )
+                rub_balance = rub_result.scalar_one_or_none()
+            
+            if direction == OrderDirection.SELL or ticker != "RUB":
+                asset_result = await session.execute(
+                    select(Balance).where(
+                        Balance.user_id == user_id, 
+                        Balance.ticker == ticker
+                    ).with_for_update()
+                )
+                asset_balance = asset_result.scalar_one_or_none()
+            
+            # Сопоставление ордеров
+            if direction == OrderDirection.BUY:
+                filled, spent_money = await self._process_buy_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
+                )
+                
+                # Проверка результатов матчинга для рыночных ордеров на покупку
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на покупку {order_id} не выполнен из-за отсутствия подходящих предложений или недостаточного баланса")
+                    order.status = OrderStatus.CANCELLED
+                
+            elif direction == OrderDirection.SELL:
+                filled, earned_money = await self._process_sell_matching(
+                    user_id, ticker, qty, price, rub_balance, asset_balance, session
+                )
+                
+                # Проверка результатов матчинга для рыночных ордеров на продажу
+                if not is_limit and filled == 0:
+                    error_log(f"Рыночный ордер на продажу {order_id} не выполнен из-за отсутствия подходящих предложений")
+                    order.status = OrderStatus.CANCELLED
+            
+            # Установка статуса ордера (если он не был установлен напрямую выше)
+            if order.status != OrderStatus.CANCELLED:
+                await self._set_order_status(order, is_limit, filled, qty)
+            
+            # Обновляем количество исполненных единиц ордера
+            order.filled = filled
+            
+            # Делаем коммит транзакции
+            await session.commit()
+            return order
+                
+        except Exception as e:
+            # Логируем ошибку
+            error_log(f"Ошибка при создании ордера: {str(e)}")
+            
+            # Откатываем транзакцию
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
+            
+            # Выбрасываем исключение дальше
+            raise ValueError(f"Ошибка при создании ордера: {str(e)}")
 
     @error_log
     async def _lock_balances(
@@ -170,31 +293,120 @@ class CRUDOrder(CRUDOrderBase):
         return rub_balance, asset_balance
 
     @error_log
-    async def _create_order_record(
-        self, 
-        order_id: str, 
-        user_id: str, 
-        direction: OrderDirection,
-        ticker: str,
-        qty: int,
-        price: int | None,
-        session: AsyncSession
-    ) -> Order:
-        """Создание записи ордера в базе данных"""
-        order = Order(
-            id=order_id,
-            status=OrderStatus.NEW,
-            user_id=user_id,
-            direction=direction,
-            ticker=ticker,
-            qty=qty,
-            price=price,
-            filled=0,
-        )
-        session.add(order)
-        await session.flush()  # Фиксируем в БД, но без коммита
-        return order
+    async def _unblock_funds_for_cancelled_order(
+        self,
+        order: Order,
+        session: AsyncSession,
+    ) -> None:
+        """Разблокировка средств при отмене или полном исполнении заявки"""
+        # Рассчитываем неисполненную часть ордера
+        remaining_qty = order.qty - (order.filled or 0)
+        
+        # Логируем информацию о разблокируемых средствах
+        error_log(f"Разблокировка средств для ордера {order.id}: статус={order.status}, "
+                  f"направление={order.direction}, всего={order.qty}, исполнено={order.filled}, "
+                  f"осталось={remaining_qty}")
+        
+        if remaining_qty <= 0:
+            error_log(f"Нет неисполненной части для разблокировки в ордере {order.id}")
+            return
+        
+        if order.direction == OrderDirection.BUY:
+            # Разблокируем деньги у покупателя только для лимитных ордеров
+            # Для рыночных ордеров price будет None
+            if order.price is not None:
+                remaining_cost = remaining_qty * order.price
+                try:
+                    await unblock_funds(order.user_id, "RUB", remaining_cost, session)
+                    error_log(f"Разблокировано средств: {remaining_cost} RUB для пользователя {order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке средств: {str(e)}")
+        
+        elif order.direction == OrderDirection.SELL:
+            # Разблокируем активы у продавца только для лимитных ордеров
+            # Для рыночных ордеров нет заблокированных активов
+            if order.price is not None:
+                try:
+                    await unblock_assets(order.user_id, order.ticker, remaining_qty, session)
+                    error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
+                except ValueError as e:
+                    error_log(f"Ошибка при разблокировке активов: {str(e)}")
 
+    @error_log
+    async def update_order_status(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        session: AsyncSession,
+    ) -> Order:
+        """Обновление статуса заявки с разблокировкой средств при необходимости"""
+        try:
+            # Получаем ордер с блокировкой
+            result = await session.execute(
+                select(Order).where(Order.id == order_id).with_for_update()
+            )
+            order = result.scalar_one_or_none()
+            
+            # Если ордер не существует
+            if not order:
+                raise ValueError(f"Заявка с ID {order_id} не найдена")
+            
+            # Получаем глобальную блокировку для всех операций пользователя
+            await get_global_lock(order.user_id, session)
+            error_log(f"Получена глобальная блокировка для пользователя {order.user_id} при обновлении статуса заявки")
+            
+            # Проверяем, полностью ли исполнен ордер
+            is_fully_executed = order.filled is not None and order.filled >= order.qty
+            
+            # Если ордер полностью исполнен, но его статус не EXECUTED, устанавливаем статус EXECUTED
+            if is_fully_executed and order.status != OrderStatus.EXECUTED:
+                error_log(f"Ордер {order_id} полностью исполнен (filled={order.filled}, qty={order.qty}), устанавливаем статус EXECUTED")
+                order.status = OrderStatus.EXECUTED
+                await session.commit()
+                return order
+            
+            # Если статус не изменился, просто возвращаем заявку
+            if order.status == new_status:
+                return order
+            
+            # Если заявка уже отменена или исполнена, не позволяем менять статус
+            if order.status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+                raise ValueError(f"Нельзя изменить статус заявки в статусе {order.status}")
+            
+            # Проверяем, остались ли неисполненные единицы в ордере
+            remaining_qty = order.qty - (order.filled or 0)
+            if remaining_qty <= 0 and new_status == OrderStatus.CANCELLED:
+                # Если ордер полностью исполнен, нельзя его отменить
+                raise ValueError(f"Нельзя отменить полностью исполненный ордер. Заполнено: {order.filled} из {order.qty}")
+            
+            # Меняем статус заявки
+            old_status = order.status
+            order.status = new_status
+            
+            # Логируем изменение статуса
+            error_log(f"Изменен статус ордера {order_id} с {old_status} на {new_status}. Заполнено: {order.filled} из {order.qty}")
+            
+            # Если заявка отменяется или исполняется полностью, разблокируем средства
+            if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
+                await self._unblock_funds_for_cancelled_order(order, session)
+        
+            # Делаем коммит внешней транзакции
+            await session.commit()
+            return order
+                
+        except Exception as e:
+            # Логируем ошибку
+            error_log(f"Ошибка при обновлении статуса ордера: {str(e)}")
+            
+            # Откатываем транзакцию
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
+            
+            # Выбрасываем исключение дальше
+            raise ValueError(f"Ошибка при обновлении статуса ордера: {str(e)}")
+            
     @error_log
     async def _process_buy_matching(
         self, 
@@ -497,211 +709,7 @@ class CRUDOrder(CRUDOrderBase):
             elif filled > 0:
                 order.status = OrderStatus.PARTIALLY_EXECUTED
             # Иначе статус остается NEW
-
-    @error_log
-    async def create_order(
-            self,
-            user_id: str,
-            body: LimitOrderBody | MarketOrderBody,
-            session: AsyncSession,
-    ) -> Order:
-        """Создание нового ордера с учетом сопоставления с существующими ордерами"""
-        try:
-            # Инициализируем параметры ордера
-            order_id = str(uuid4())
-            price = getattr(body, 'price', None)
-            is_limit = price is not None
-            direction = body.direction
-            ticker = body.ticker
-            qty = body.qty
-        
-            filled = 0
-            spent_money = 0
-            earned_money = 0
-            
-            # Проверка достаточности баланса без блокировки
-            await self._check_balance_availability(user_id, direction, ticker, qty, price, session)
-            
-            # Блокировка строк баланса и проверка достаточности после блокировки
-            rub_balance, asset_balance = await self._lock_balances(user_id, direction, ticker, qty, price, session)
-            
-            # Создание записи ордера
-            order = await self._create_order_record(order_id, user_id, direction, ticker, qty, price, session)
-            
-            # Сопоставление с существующими ордерами
-            if direction == OrderDirection.BUY:
-                filled, spent_money = await self._process_buy_matching(
-                    user_id, ticker, qty, price, rub_balance, asset_balance, session
-                )
                 
-                # Проверка результатов матчинга для рыночных ордеров на покупку
-                if not is_limit and filled == 0:
-                    error_log(f"Рыночный ордер на покупку {order_id} не выполнен из-за отсутствия подходящих предложений или недостаточного баланса")
-                    # Устанавливаем статус CANCELLED напрямую, так как _set_order_status вызывается далее
-                    order.status = OrderStatus.CANCELLED
-                
-            elif direction == OrderDirection.SELL:
-                filled, earned_money = await self._process_sell_matching(
-                    user_id, ticker, qty, price, rub_balance, asset_balance, session
-                )
-                
-                # Проверка результатов матчинга для рыночных ордеров на продажу
-                if not is_limit and filled == 0:
-                    error_log(f"Рыночный ордер на продажу {order_id} не выполнен из-за отсутствия подходящих предложений")
-                    # Устанавливаем статус CANCELLED напрямую
-                    order.status = OrderStatus.CANCELLED
-            
-            # Установка статуса ордера (если он не был установлен напрямую выше)
-            if order.status != OrderStatus.CANCELLED:
-                await self._set_order_status(order, is_limit, filled, qty)
-            
-            # Обновляем количество исполненных единиц ордера
-            order.filled = filled
-            
-            # Создаем запись о транзакции, если были исполнения
-            if filled > 0:
-                # Здесь можно добавить код для создания записей в таблице транзакций
-                # ...
-                error_log(f"Ордер {order_id} исполнен на количество {filled} из {qty}")
-            
-            # Делаем коммит транзакции
-            await session.commit()
-            return order
-                
-        except Exception as e:
-            # Логируем ошибку
-            error_log(f"Ошибка при создании ордера: {str(e)}")
-            
-            # Откатываем транзакцию
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
-            
-            # Выбрасываем исключение дальше
-            raise ValueError(f"Ошибка при создании ордера: {str(e)}")
-        finally:
-            try:
-                await session.close()
-            except Exception as close_error:
-                error_log(f"Ошибка при закрытии сессии: {close_error}")
-
-    @error_log
-    async def _unblock_funds_for_cancelled_order(
-        self,
-        order: Order,
-        session: AsyncSession,
-    ) -> None:
-        """Разблокировка средств при отмене или полном исполнении заявки"""
-        # Рассчитываем неисполненную часть ордера
-        remaining_qty = order.qty - (order.filled or 0)
-        
-        # Логируем информацию о разблокируемых средствах
-        error_log(f"Разблокировка средств для ордера {order.id}: статус={order.status}, "
-                  f"направление={order.direction}, всего={order.qty}, исполнено={order.filled}, "
-                  f"осталось={remaining_qty}")
-        
-        if remaining_qty <= 0:
-            error_log(f"Нет неисполненной части для разблокировки в ордере {order.id}")
-            return
-        
-        if order.direction == OrderDirection.BUY:
-            # Разблокируем деньги у покупателя только для лимитных ордеров
-            # Для рыночных ордеров price будет None
-            if order.price is not None:
-                remaining_cost = remaining_qty * order.price
-                try:
-                    await balance_crud.unblock_funds(order.user_id, "RUB", remaining_cost, session)
-                    error_log(f"Разблокировано средств: {remaining_cost} RUB для пользователя {order.user_id}")
-                except ValueError as e:
-                    error_log(f"Ошибка при разблокировке средств: {str(e)}")
-        
-        elif order.direction == OrderDirection.SELL:
-            # Разблокируем активы у продавца только для лимитных ордеров
-            # Для рыночных ордеров нет заблокированных активов
-            if order.price is not None:
-                try:
-                    await balance_crud.unblock_assets(order.user_id, order.ticker, remaining_qty, session)
-                    error_log(f"Разблокировано активов: {remaining_qty} {order.ticker} для пользователя {order.user_id}")
-                except ValueError as e:
-                    error_log(f"Ошибка при разблокировке активов: {str(e)}")
-
-    @error_log
-    async def update_order_status(
-        self,
-        order_id: str,
-        new_status: OrderStatus,
-        session: AsyncSession,
-    ) -> Order:
-        """Обновление статуса заявки с разблокировкой средств при необходимости"""
-        try:
-            # Получаем ордер с блокировкой
-            result = await session.execute(
-                select(Order).where(Order.id == order_id).with_for_update()
-            )
-            order = result.scalar_one_or_none()
-            
-            # Если ордер не существует
-            if not order:
-                raise ValueError(f"Заявка с ID {order_id} не найдена")
-            
-            # Проверяем, полностью ли исполнен ордер
-            is_fully_executed = order.filled is not None and order.filled >= order.qty
-            
-            # Если ордер полностью исполнен, но его статус не EXECUTED, устанавливаем статус EXECUTED
-            if is_fully_executed and order.status != OrderStatus.EXECUTED:
-                error_log(f"Ордер {order_id} полностью исполнен (filled={order.filled}, qty={order.qty}), устанавливаем статус EXECUTED")
-                order.status = OrderStatus.EXECUTED
-                await session.commit()
-                return order
-            
-            # Если статус не изменился, просто возвращаем заявку
-            if order.status == new_status:
-                return order
-            
-            # Если заявка уже отменена или исполнена, не позволяем менять статус
-            if order.status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
-                raise ValueError(f"Нельзя изменить статус заявки в статусе {order.status}")
-            
-            # Проверяем, остались ли неисполненные единицы в ордере
-            remaining_qty = order.qty - (order.filled or 0)
-            if remaining_qty <= 0 and new_status == OrderStatus.CANCELLED:
-                # Если ордер полностью исполнен, нельзя его отменить
-                raise ValueError(f"Нельзя отменить полностью исполненный ордер. Заполнено: {order.filled} из {order.qty}")
-            
-            # Меняем статус заявки
-            old_status = order.status
-            order.status = new_status
-            
-            # Логируем изменение статуса
-            error_log(f"Изменен статус ордера {order_id} с {old_status} на {new_status}. Заполнено: {order.filled} из {order.qty}")
-            
-            # Если заявка отменяется или исполняется полностью, разблокируем средства
-            if new_status in [OrderStatus.CANCELLED, OrderStatus.EXECUTED]:
-                await self._unblock_funds_for_cancelled_order(order, session)
-        
-            # Делаем коммит внешней транзакции
-            await session.commit()
-            return order
-                
-        except Exception as e:
-            # Логируем ошибку
-            error_log(f"Ошибка при обновлении статуса ордера: {str(e)}")
-            
-            # Откатываем транзакцию
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                error_log(f"Ошибка при откате транзакции: {str(rollback_error)}")
-            
-            # Выбрасываем исключение дальше
-            raise ValueError(f"Ошибка при обновлении статуса ордера: {str(e)}")
-        finally:
-            try:
-                await session.close()
-            except Exception as close_error:
-                error_log(f"Ошибка при закрытии сессии: {close_error}")
-
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100) -> dict:
         """Получение биржевого стакана - делегируем в специализированный модуль"""
         return await get_orderbook(ticker, session, limit)
