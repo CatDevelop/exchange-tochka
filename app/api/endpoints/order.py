@@ -33,12 +33,22 @@ async def create_order(
         current_user: User = Depends(get_current_user),
 ):
     try:
-        order = await order_crud.create_order(user_id=current_user.id, body=body, session=session)
+        price = getattr(body, 'price', None)
+        
+        order = await order_crud.create_order(
+            user_id=current_user.id,
+            direction=body.direction,
+            ticker=body.ticker,
+            qty=body.qty,
+            price=price,
+            session=session
+        )
+        
         return OrderResponse(success=True, order_id=order.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail='Внутренняя ошибка сервера')
+        raise HTTPException(status_code=500, detail=f'Внутренняя ошибка сервера: {str(e)}')
 
 
 @router.delete(
@@ -65,9 +75,8 @@ async def cancel_order(
             raise ValueError('Нет доступа к этой заявке у пользователя ' + current_user.id + ' ' + current_user.role + " " + order.user_id)
 
         # Отменяем заявку
-        updated_order = await order_crud.update_order_status(
+        updated_order = await order_crud.cancel_order(
             order_id=order_id,
-            new_status=OrderStatus.CANCELLED,
             session=session
         )
 
