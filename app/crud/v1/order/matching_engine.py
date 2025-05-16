@@ -36,6 +36,9 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
 
     filled_qty = 0
     spent_money = 0
+    executions = {}  # Словарь с информацией о выполненных ордерах
+    
+    error_log(f"Найдено {len(sell_orders)} ордеров на продажу для сопоставления")
 
     for sell_order in sell_orders:
         # Обрабатываем каждый ордер на продажу
@@ -58,8 +61,8 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
         order_cost = to_fill * order_price
         spent_money += order_cost
         
-        # Зачисляем деньги продавцу
-        await add_funds(sell_order.user_id, order_cost, "RUB", session)
+        # НЕ зачисляем деньги продавцу здесь, это делается в crud_order.py
+        # await add_funds(sell_order.user_id, order_cost, "RUB", session)
         
         # Разблокируем активы продавца, если это лимитная заявка
         if sell_order.price is not None:
@@ -68,6 +71,10 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
                 error_log(f"Разблокировано активов: {to_fill} {ticker} для пользователя {sell_order.user_id}")
             except ValueError as e:
                 error_log(f"Ошибка при разблокировке активов: {str(e)}")
+                
+        # НЕ списываем активы здесь, так как это делается в crud_order.py
+        # await deduct_assets(sell_order.user_id, to_fill, ticker, session)
+        # error_log(f"Списано активов: {to_fill} {ticker} у пользователя {sell_order.user_id}")
 
         # Создаем запись о транзакции
         transaction = Transaction(
@@ -79,11 +86,23 @@ async def match_sell_orders(ticker: str, qty: int, price: int | None, session: A
             timestamp=datetime.utcnow(),
         )
         session.add(transaction)
+        
+        # Сохраняем информацию о выполнении для возврата
+        executions[sell_order.id] = {
+            "user_id": sell_order.user_id,
+            "qty": to_fill,
+            "price": order_price,
+            "amount": order_cost
+        }
+        
+        error_log(f"Сопоставлен ордер продажи {sell_order.id}: {to_fill} {ticker} по цене {order_price}, сумма {order_cost}")
 
         if filled_qty == qty:
             break
+            
+    error_log(f"Всего сопоставлено ордеров продажи: {len(executions)}, общее кол-во: {filled_qty}, общая сумма: {spent_money}")
 
-    return {"filled_qty": filled_qty, "spent_money": spent_money}
+    return {"filled_qty": filled_qty, "spent_money": spent_money, "executions": executions}
 
 
 async def match_buy_orders(ticker: str, qty: int, price: int | None, session: AsyncSession) -> dict:
@@ -106,6 +125,9 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
 
     filled_qty = 0
     earned_money = 0
+    executions = {}  # Словарь с информацией о выполненных ордерах
+    
+    error_log(f"Найдено {len(buy_orders)} ордеров на покупку для сопоставления")
 
     for buy_order in buy_orders:
         # Обрабатываем каждый ордер на покупку
@@ -128,8 +150,8 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
         order_cost = to_fill * order_price
         earned_money += order_cost
         
-        # Зачисляем актив покупателю
-        await add_assets(buy_order.user_id, to_fill, ticker, session)
+        # НЕ зачисляем актив покупателю здесь, это делается в crud_order.py
+        # await add_assets(buy_order.user_id, to_fill, ticker, session)
         
         # Разблокируем и списываем деньги у покупателя, если это лимитная заявка
         if buy_order.price is not None:
@@ -149,8 +171,20 @@ async def match_buy_orders(ticker: str, qty: int, price: int | None, session: As
             timestamp=datetime.utcnow(),
         )
         session.add(transaction)
+        
+        # Сохраняем информацию о выполнении для возврата
+        executions[buy_order.id] = {
+            "user_id": buy_order.user_id,
+            "qty": to_fill,
+            "price": order_price,
+            "amount": order_cost
+        }
+        
+        error_log(f"Сопоставлен ордер покупки {buy_order.id}: {to_fill} {ticker} по цене {order_price}, сумма {order_cost}")
 
         if filled_qty == qty:
             break
+            
+    error_log(f"Всего сопоставлено ордеров покупки: {len(executions)}, общее кол-во: {filled_qty}, общая сумма: {earned_money}")
 
-    return {"filled_qty": filled_qty, "earned_money": earned_money} 
+    return {"filled_qty": filled_qty, "earned_money": earned_money, "executions": executions} 

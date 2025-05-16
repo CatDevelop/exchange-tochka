@@ -48,11 +48,40 @@ async def refund_user(user_id: str, amount: int, ticker: str, session: AsyncSess
 async def deduct_assets(user_id: str, qty: int, ticker: str, session: AsyncSession):
     """Списание активов с баланса пользователя"""
     error_log(f"Списание активов: user_id={user_id}, ticker={ticker}, qty={qty}")
+    
+    # Проверяем текущий баланс для логирования
+    result = await session.execute(
+        select(Balance).where(
+            Balance.user_id == user_id,
+            Balance.ticker == ticker
+        )
+    )
+    balance = result.scalars().first()
+    
+    if balance:
+        error_log(f"Текущий баланс перед списанием: {balance.amount} {ticker}, заблокировано: {balance.blocked_amount}")
+    else:
+        error_log(f"Баланс {ticker} не найден для пользователя {user_id}")
+    
     await session.execute(
         Balance.__table__.update()
         .where(Balance.user_id == user_id, Balance.ticker == ticker)
         .values(amount=Balance.amount - qty)
     )
+    
+    # Проверяем обновленный баланс для логирования
+    result = await session.execute(
+        select(Balance).where(
+            Balance.user_id == user_id,
+            Balance.ticker == ticker
+        )
+    )
+    updated_balance = result.scalars().first()
+    
+    if updated_balance:
+        error_log(f"Обновленный баланс после списания: {updated_balance.amount} {ticker}, заблокировано: {updated_balance.blocked_amount}")
+    else:
+        error_log(f"Обновленный баланс не найден (странно!)")
 
 
 async def add_assets(user_id: str, qty: int, ticker: str, session: AsyncSession):
