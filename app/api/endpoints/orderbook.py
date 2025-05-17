@@ -19,19 +19,18 @@ router = APIRouter()
     tags=['public'],
 )
 async def get_orderbook(
-        ticker: str = Path(..., description="Тикер иsнструмента"),
-        limit: Optional[int] = Query(100, ge=1, le=1000, description="Максимальное количество уровней цен"),
-        session: AsyncSession = Depends(get_async_session),
+    ticker: str = Path(..., description='Тикер иsнструмента'),
+    limit: Optional[int] = Query(
+        10, ge=1, le=1000, description='Максимальное количество уровней цен'
+    ),
+    session: AsyncSession = Depends(get_async_session),
 ):
     orderbook_data = await order_crud.get_orderbook(
-        ticker=ticker,
-        session=session,
-        limit=limit
+        ticker=ticker, session=session, limit=limit
     )
 
     return OrderbookResponse(
-        bid_levels=orderbook_data["bid_levels"],
-        ask_levels=orderbook_data["ask_levels"]
+        bid_levels=orderbook_data['bid_levels'], ask_levels=orderbook_data['ask_levels']
     )
 
 
@@ -42,14 +41,14 @@ async def get_orderbook(
     tags=['public'],
 )
 async def get_transaction_history(
-        ticker: str = Path(..., description="Тикер инструмента"),
-        limit: Optional[int] = Query(100, ge=1, le=1000, description="Максимальное количество транзакций"),
-        session: AsyncSession = Depends(get_async_session),
+    ticker: str = Path(..., description='Тикер инструмента'),
+    limit: Optional[int] = Query(
+        10, ge=1, le=1000, description='Максимальное количество транзакций'
+    ),
+    session: AsyncSession = Depends(get_async_session),
 ):
     transactions = await transaction_crud.get_transactions_by_ticker(
-        ticker=ticker,
-        session=session,
-        limit=limit
+        ticker=ticker, session=session, limit=limit
     )
 
     return transactions
