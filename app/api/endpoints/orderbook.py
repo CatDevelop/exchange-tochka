@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_session
 from app.crud.v1.order import order_crud
 from app.crud.v1.transaction import transaction_crud
+from app.models.order import OrderBookLevels
 from app.schemas.order import OrderbookResponse
 from app.schemas.transaction import TransactionResponse
 
@@ -26,7 +27,7 @@ async def get_orderbook(
     session: AsyncSession = Depends(get_async_session),
 ):
     orderbook_data = await order_crud.get_orderbook(
-        ticker=ticker, session=session, limit=limit
+        ticker=ticker, session=session, limit=limit, levels=OrderBookLevels.ALL
     )
 
     return OrderbookResponse(

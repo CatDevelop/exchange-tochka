@@ -22,6 +22,12 @@ class OrderDirection(enum.Enum):
     SELL = "SELL"
 
 
+class OrderBookLevels(enum.Enum):
+    ALL = "ALL"
+    BID = "BID"
+    ASK = "ASK"
+
+
 # Модель Order
 class Order(Base):
     __tablename__ = "order"
