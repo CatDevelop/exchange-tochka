@@ -234,6 +234,9 @@ class CRUDOrder(CRUDOrderBase):
         )
         session.add(transaction)
         
+        # Делаем flush, чтобы transaction получил id из базы
+        await session.flush()
+        
         # Начисляем средства
         transaction_amount = executable_qty * price
         
