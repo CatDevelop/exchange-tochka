@@ -14,7 +14,9 @@ class Transaction(Base):
     user_id = Column(
         UUID(as_uuid=False), ForeignKey('user.id', ondelete="CASCADE"), nullable=False
     )
-    ticker = Column(String, nullable=False)
+    ticker = Column(
+        String, ForeignKey('instrument.ticker', ondelete="CASCADE"), nullable=False
+    )
     amount = Column(Integer, nullable=False)
     price = Column(Integer, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
