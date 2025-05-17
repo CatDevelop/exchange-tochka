@@ -39,8 +39,8 @@ class Base(AsyncAttrs, DeclarativeBase):
 # Увеличение лимитов для пула соединений чтобы избежать ошибки TooManyConnectionsError
 engine = create_async_engine(
     settings.db.url,
-    pool_size=40,
-    max_overflow=60,
+    pool_size=20,
+    max_overflow=30,
     pool_timeout=120,
     pool_recycle=1800,
     pool_pre_ping=True,
@@ -57,10 +57,10 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as async_session:
         try:
             yield async_session
+            # Явно закрываем соединение после использования
+            await async_session.close()
         except Exception as e:
             # Если произошла ошибка, делаем откат и закрываем соединение
             await async_session.rollback()
-            raise e
-        finally:
-            # Явно закрываем соединение после использования в любом случае
             await async_session.close()
+            raise e
