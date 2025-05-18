@@ -176,5 +176,3 @@ orval_schemas/tmp/openapi.yaml
 
 # macOS
 .DS_Store
-
-docker-compose.yml

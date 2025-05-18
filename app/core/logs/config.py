@@ -1,12 +1,17 @@
 from typing import Any
+import os
 
 from deepmerge import always_merger
+from app.core.logs.elasticsearch_logger import get_elasticsearch_config
 
 MAX_BYTES = 1024 * 1024 * 100
 FILENAME = '/tmp/giga_logs.log'
 INFO_FILENAME = '/tmp/info_logs.log'
 DEBUG_FILENAME = '/tmp/debug_logs.log'
 ERROR_FILENAME = '/tmp/error_logs.log'
+
+# Получаем URL Elasticsearch из переменной окружения или используем значение по умолчанию
+ELASTICSEARCH_HOST = os.environ.get('ELASTICSEARCH_HOST', 'http://elasticsearch:9200')
 
 LOGGING_CONFIG_BASE: dict[str, Any] = {
     'version': 1,
@@ -229,6 +234,8 @@ LOGGING_CONFIG_ERROR: dict[str, Any] = {
     },
 }
 
+LOGGING_CONFIG_ELASTICSEARCH = get_elasticsearch_config(es_host=ELASTICSEARCH_HOST)
+
 LOGGING_CONFIGS = [
     LOGGING_CONFIG_BASE,
     LOGGING_CONFIG_UVICORN,
@@ -236,8 +243,14 @@ LOGGING_CONFIGS = [
     LOGGING_CONFIG_DEBUG,
     LOGGING_CONFIG_INFO,
     LOGGING_CONFIG_ERROR,
+    LOGGING_CONFIG_ELASTICSEARCH,
 ]
 
 LOGGING_CONFIG_RESULT: dict[str, Any] = {}
 for config in LOGGING_CONFIGS:
     LOGGING_CONFIG_RESULT = always_merger.merge(LOGGING_CONFIG_RESULT, config)
+
+# Добавляем Elasticsearch handler ко всем логгерам
+for logger_name, logger in LOGGING_CONFIG_RESULT['loggers'].items():
+    if 'handlers' in logger and 'elasticsearch_handler' not in logger['handlers']:
+        logger['handlers'].append('elasticsearch_handler')
