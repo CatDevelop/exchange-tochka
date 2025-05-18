@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   elasticsearch:
-    image: cr.yandex/mirror/elasticsearch/elasticsearch:8.11.1
+    image: elastic/elasticsearch:8.11.1
     container_name: backend-python-tochka-elasticsearch
     environment:
       - discovery.type=single-node
@@ -14,7 +14,7 @@ services:
       - esdata:/usr/share/elasticsearch/data
 
   kibana:
-    image: cr.yandex/mirror/kibana/kibana:8.11.1
+    image: elastic/kibana:8.11.1
     container_name: backend-python-tochka-kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200

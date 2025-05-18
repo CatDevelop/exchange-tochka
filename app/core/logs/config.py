@@ -251,6 +251,9 @@ for config in LOGGING_CONFIGS:
     LOGGING_CONFIG_RESULT = always_merger.merge(LOGGING_CONFIG_RESULT, config)
 
 # Добавляем Elasticsearch handler ко всем логгерам
-for logger_name, logger in LOGGING_CONFIG_RESULT['loggers'].items():
-    if 'handlers' in logger and 'elasticsearch_handler' not in logger['handlers']:
-        logger['handlers'].append('elasticsearch_handler')
+try:
+    for logger_name, logger in LOGGING_CONFIG_RESULT['loggers'].items():
+        if 'handlers' in logger and 'elasticsearch_handler' not in logger['handlers']:
+            logger['handlers'].append('elasticsearch_handler')
+except Exception as e:
+    print(f"Ошибка при добавлении Elasticsearch handler к логгерам: {e}")
