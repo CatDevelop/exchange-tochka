@@ -1,8 +1,6 @@
 from typing import Any
-import os
 
 from deepmerge import always_merger
-from app.core.logs.elasticsearch_logger import get_elasticsearch_config
 
 MAX_BYTES = 1024 * 1024 * 100
 FILENAME = '/tmp/giga_logs.log'
@@ -10,12 +8,55 @@ INFO_FILENAME = '/tmp/info_logs.log'
 DEBUG_FILENAME = '/tmp/debug_logs.log'
 ERROR_FILENAME = '/tmp/error_logs.log'
 
-# Получаем URL Elasticsearch из переменной окружения или используем значение по умолчанию
-ELASTICSEARCH_HOST = os.environ.get('ELASTICSEARCH_HOST', 'http://elasticsearch:9200')
+# Конфигурация Elasticsearch
+ES_HOST = '192.168.1.219'
+ES_PORT = 9200
+ES_INDEX_PREFIX = 'exchange_logs'
 
 LOGGING_CONFIG_BASE: dict[str, Any] = {
     'version': 1,
     'disable_existing_loggers': False,
+}
+
+# Конфигурация для Elasticsearch
+LOGGING_CONFIG_ELASTICSEARCH: dict[str, Any] = {
+    'formatters': {
+        'es_formatter': {
+            'format': '%(asctime)s.%(msecs)03d %(module)s:%(lineno)d [%(levelname)s] - %(message)s',
+            'datefmt': '[%Y-%m-%d %H:%M:%S]',
+            'class': 'logging.Formatter',
+        },
+    },
+    'handlers': {
+        'elasticsearch_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-all',
+            'level': 'DEBUG',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_debug_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-debug',
+            'level': 'DEBUG',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_info_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-info',
+            'level': 'INFO',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_error_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-error',
+            'level': 'ERROR',
+            'formatter': 'es_formatter',
+        },
+    },
 }
 
 LOGGING_CONFIG_UVICORN: dict[str, Any] = {
@@ -234,26 +275,31 @@ LOGGING_CONFIG_ERROR: dict[str, Any] = {
     },
 }
 
-LOGGING_CONFIG_ELASTICSEARCH = get_elasticsearch_config(es_host=ELASTICSEARCH_HOST)
+LOGGING_CONFIG_ROOT: dict[str, Any] = {
+    'handlers': {
+        'elasticsearch_root_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-python',
+            'level': 'INFO',
+            'formatter': 'es_formatter',
+        },
+    },
+    'root': {
+        'handlers': ['elasticsearch_root_handler'],
+        'level': 'INFO',
+    },
+}
 
 LOGGING_CONFIGS = [
     LOGGING_CONFIG_BASE,
-    LOGGING_CONFIG_UVICORN,
-    LOGGING_CONFIG_GUNICORN,
     LOGGING_CONFIG_DEBUG,
     LOGGING_CONFIG_INFO,
     LOGGING_CONFIG_ERROR,
-    LOGGING_CONFIG_ELASTICSEARCH,
+    LOGGING_CONFIG_UVICORN,
+    LOGGING_CONFIG_GUNICORN,
 ]
 
 LOGGING_CONFIG_RESULT: dict[str, Any] = {}
 for config in LOGGING_CONFIGS:
     LOGGING_CONFIG_RESULT = always_merger.merge(LOGGING_CONFIG_RESULT, config)
-
-# Добавляем Elasticsearch handler ко всем логгерам
-try:
-    for logger_name, logger in LOGGING_CONFIG_RESULT['loggers'].items():
-        if 'handlers' in logger and 'elasticsearch_handler' not in logger['handlers']:
-            logger['handlers'].append('elasticsearch_handler')
-except Exception as e:
-    print(f"Ошибка при добавлении Elasticsearch handler к логгерам: {e}")
