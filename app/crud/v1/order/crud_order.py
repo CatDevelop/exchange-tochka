@@ -16,9 +16,9 @@ class CRUDOrder(CRUDOrderBase):
     """Класс для работы с ордерами"""
 
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100,
-                            levels: OrderBookLevels = OrderBookLevels.ALL) -> dict:
+                            levels: OrderBookLevels = OrderBookLevels.ALL, user_id: str = None) -> dict:
         """Получение биржевого стакана - делегируем в специализированный модуль"""
-        return await get_orderbook(ticker, session, limit, levels)
+        return await get_orderbook(ticker, session, limit, levels, user_id)
 
     async def create_order(self, user_id: str, direction: OrderDirection, ticker: str,
                            qty: int, price: int = None, session: AsyncSession = None) -> Order:
@@ -481,7 +481,7 @@ class CRUDOrder(CRUDOrderBase):
 
         if is_market_order:
             # 3. Рыночная заявка - проверяем наличие спроса (заявок на покупку)
-            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID)
+            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID, user_id=user_id)
             bid_levels = orderbook["bid_levels"]
 
             if not bid_levels:
@@ -566,7 +566,7 @@ class CRUDOrder(CRUDOrderBase):
             )
 
             # 5-6. Сопоставляем данные
-            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID)
+            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID, user_id=user_id)
 
             # Для продажи ищем заявки на покупку с ценой >= нашей цены (сортируем по убыванию цены)
             bid_levels = [level for level in orderbook["bid_levels"] if level["price"] >= price]
@@ -648,7 +648,7 @@ class CRUDOrder(CRUDOrderBase):
 
         if is_market_order:
             # Рыночная заявка - проверяем наличие предложения
-            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.ASK)
+            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.ASK, user_id=user_id)
             ask_levels = orderbook["ask_levels"]
 
             if not ask_levels:
@@ -832,7 +832,7 @@ class CRUDOrder(CRUDOrderBase):
             )
 
             # Проверяем, можно ли исполнить заявку сразу
-            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.ASK)
+            orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.ASK, user_id=user_id)
 
             # Для покупки ищем заявки на продажу с ценой <= нашей цены
             ask_levels = [level for level in orderbook["ask_levels"] if level["price"] <= price]

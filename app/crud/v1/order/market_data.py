@@ -11,7 +11,8 @@ async def get_orderbook(
         ticker: str,
         session: AsyncSession,
         limit: int = 100,
-        levels: OrderBookLevels = OrderBookLevels.ALL
+        levels: OrderBookLevels = OrderBookLevels.ALL,
+        user_id: str = None
 ) -> dict:
     """
     Получение биржевого стакана для указанного тикера
@@ -41,6 +42,8 @@ async def get_orderbook(
             Order.price.isnot(None),
             Order.filled < Order.qty
         )
+        if user_id:
+            bids_query.where(Order.user_id != user_id)
 
         bids_result = await session.execute(bids_query)
         bids_raw = bids_result.all()
@@ -71,6 +74,8 @@ async def get_orderbook(
             Order.price.isnot(None),
             Order.filled < Order.qty
         )
+        if user_id:
+            asks_query.where(Order.user_id != user_id)
 
         asks_result = await session.execute(asks_query)
         asks_raw = asks_result.all()
