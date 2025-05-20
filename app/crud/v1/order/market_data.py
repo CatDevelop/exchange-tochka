@@ -40,10 +40,9 @@ async def get_orderbook(
             Order.direction == OrderDirection.BUY,
             Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
             Order.price.isnot(None),
-            Order.filled < Order.qty
+            Order.filled < Order.qty,
+            Order.user_id != user_id
         )
-        if user_id:
-            bids_query.where(Order.user_id != user_id)
 
         bids_result = await session.execute(bids_query)
         bids_raw = bids_result.all()
@@ -72,10 +71,9 @@ async def get_orderbook(
             Order.direction == OrderDirection.SELL,
             Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
             Order.price.isnot(None),
-            Order.filled < Order.qty
+            Order.filled < Order.qty,
+            Order.user_id != user_id
         )
-        if user_id:
-            asks_query.where(Order.user_id != user_id)
 
         asks_result = await session.execute(asks_query)
         asks_raw = asks_result.all()
