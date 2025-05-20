@@ -8,9 +8,55 @@ INFO_FILENAME = '/tmp/info_logs.log'
 DEBUG_FILENAME = '/tmp/debug_logs.log'
 ERROR_FILENAME = '/tmp/error_logs.log'
 
+# Конфигурация Elasticsearch
+ES_HOST = '192.168.1.219'
+ES_PORT = 9200
+ES_INDEX_PREFIX = 'exchange_logs'
+
 LOGGING_CONFIG_BASE: dict[str, Any] = {
     'version': 1,
     'disable_existing_loggers': False,
+}
+
+# Конфигурация для Elasticsearch
+LOGGING_CONFIG_ELASTICSEARCH: dict[str, Any] = {
+    'formatters': {
+        'es_formatter': {
+            'format': '%(asctime)s.%(msecs)03d %(module)s:%(lineno)d [%(levelname)s] - %(message)s',
+            'datefmt': '[%Y-%m-%d %H:%M:%S]',
+            'class': 'logging.Formatter',
+        },
+    },
+    'handlers': {
+        'elasticsearch_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-all',
+            'level': 'DEBUG',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_debug_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-debug',
+            'level': 'DEBUG',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_info_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-info',
+            'level': 'INFO',
+            'formatter': 'es_formatter',
+        },
+        'elasticsearch_error_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-error',
+            'level': 'ERROR',
+            'formatter': 'es_formatter',
+        },
+    },
 }
 
 LOGGING_CONFIG_UVICORN: dict[str, Any] = {
@@ -229,13 +275,29 @@ LOGGING_CONFIG_ERROR: dict[str, Any] = {
     },
 }
 
+LOGGING_CONFIG_ROOT: dict[str, Any] = {
+    'handlers': {
+        'elasticsearch_root_handler': {
+            'class': 'app.core.logs.elasticsearch.ESHandler',
+            'hosts': [f'{ES_HOST}:{ES_PORT}'],
+            'es_index_name': f'{ES_INDEX_PREFIX}-python',
+            'level': 'INFO',
+            'formatter': 'es_formatter',
+        },
+    },
+    'root': {
+        'handlers': ['elasticsearch_root_handler'],
+        'level': 'INFO',
+    },
+}
+
 LOGGING_CONFIGS = [
     LOGGING_CONFIG_BASE,
-    LOGGING_CONFIG_UVICORN,
-    LOGGING_CONFIG_GUNICORN,
     LOGGING_CONFIG_DEBUG,
     LOGGING_CONFIG_INFO,
     LOGGING_CONFIG_ERROR,
+    LOGGING_CONFIG_UVICORN,
+    LOGGING_CONFIG_GUNICORN,
 ]
 
 LOGGING_CONFIG_RESULT: dict[str, Any] = {}

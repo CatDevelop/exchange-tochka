@@ -31,7 +31,6 @@ jobs:
             sudo docker rm -f backend-python-tochka;
           fi &&
 
-          sudo docker build -t backend-python-tochka . &&
-          sudo docker run -d --name backend-python-tochka -p 9003:8000 backend-python-tochka &&
+          sudo docker compose up -d --build &&
           sudo docker system prune -af
         '
