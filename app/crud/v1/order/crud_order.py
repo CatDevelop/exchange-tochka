@@ -2,7 +2,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, desc, asc
 from datetime import datetime
 
+from app.core.logs.logs import error_logger, error_log
 from app.crud.v1.order.base import CRUDOrderBase
+from app.crud.v1.order.crud_order_v2 import order_crud_v2
 from app.crud.v1.order.market_data import get_orderbook
 from app.crud.v1.balance import balance_crud
 from app.models.order import Order, OrderStatus, OrderDirection, OrderBookLevels
@@ -19,7 +21,7 @@ class CRUDOrder(CRUDOrderBase):
         return await get_orderbook(ticker, session, limit, levels)
 
     async def create_order(self, user_id: str, direction: OrderDirection, ticker: str,
-                          qty: int, price: int = None, session: AsyncSession = None) -> Order:
+                           qty: int, price: int = None, session: AsyncSession = None) -> Order:
         """
         Создание заявки на бирже
 
@@ -52,8 +54,8 @@ class CRUDOrder(CRUDOrderBase):
             )
 
     async def _find_matching_orders(self, ticker: str, direction: OrderDirection,
-                                  price: int = None, limit: int = 100,
-                                  session: AsyncSession = None) -> list:
+                                    price: int = None, limit: int = 100,
+                                    session: AsyncSession = None) -> list:
         """
         Поиск подходящих встречных заявок
 
@@ -105,7 +107,7 @@ class CRUDOrder(CRUDOrderBase):
         return result.scalars().all()
 
     async def _update_counterparty_order(self, order: Order, executed_qty: int,
-                                       session: AsyncSession) -> None:
+                                         session: AsyncSession) -> None:
         """
         Обновление заявки контрагента
 
@@ -176,7 +178,8 @@ class CRUDOrder(CRUDOrderBase):
                     async_session=session
                 )
 
-    async def _create_cancelled_order(self, user_id: str, direction: OrderDirection, ticker: str, qty: int, price: int = None, session: AsyncSession = None) -> Order:
+    async def _create_cancelled_order(self, user_id: str, direction: OrderDirection, ticker: str, qty: int,
+                                      price: int = None, session: AsyncSession = None) -> Order:
         """
         Создание заявки в статусе ОТМЕНЕНА
 
@@ -201,11 +204,12 @@ class CRUDOrder(CRUDOrderBase):
             filled=0
         )
         session.add(order)
+        await session.flush()
         await session.commit()
         return order
 
     async def _create_transaction_and_deposit(self, user_id: str, ticker: str, executable_qty: int,
-                                             price: int, receiver_ticker: str, session: AsyncSession) -> tuple:
+                                              price: int, receiver_ticker: str, session: AsyncSession) -> tuple:
         """
         Создание транзакции и начисление средств
 
@@ -260,8 +264,8 @@ class CRUDOrder(CRUDOrderBase):
             return transaction_amount, executable_qty
 
     async def _create_order(self, user_id: str, direction: OrderDirection, ticker: str,
-                           qty: int, price: int, status: OrderStatus, filled: int,
-                           session: AsyncSession) -> Order:
+                            qty: int, price: int, status: OrderStatus, filled: int,
+                            session: AsyncSession) -> Order:
         """
         Создание заявки с указанными параметрами
 
@@ -288,6 +292,7 @@ class CRUDOrder(CRUDOrderBase):
             filled=filled
         )
         session.add(order)
+        await session.flush()
         await session.commit()
         return order
 
@@ -310,7 +315,7 @@ class CRUDOrder(CRUDOrderBase):
             return OrderStatus.PARTIALLY_EXECUTED
 
     async def _match_orders(self, user_id: str, ticker: str, qty: int, price_levels: list,
-                           is_buy: bool, price: int = None, session: AsyncSession = None) -> tuple:
+                            is_buy: bool, price: int = None, session: AsyncSession = None) -> tuple:
         """
         Сопоставление заявок - исполнение заявки против существующих в стакане
 
@@ -442,7 +447,7 @@ class CRUDOrder(CRUDOrderBase):
         return executed_qty, total_amount
 
     async def _process_sell_order(self, user_id: str, ticker: str, qty: int,
-                                 price: int = None, session: AsyncSession = None) -> Order:
+                                  price: int = None, session: AsyncSession = None) -> Order:
         """
         Обработка заявки на продажу
 
@@ -468,6 +473,11 @@ class CRUDOrder(CRUDOrderBase):
 
         # 2. Определяем тип заявки (лимитная или рыночная)
         is_market_order = price is None
+
+        # if is_market_order:
+        #     return await order_crud_v2.sell_market(user_id=user_id, ticker=ticker, qty=qty, session=session)
+        # else:
+        #     return await order_crud_v2.sell_limit(user_id=user_id, ticker=ticker, qty=qty, price=price, session=session)
 
         if is_market_order:
             # 3. Рыночная заявка - проверяем наличие спроса (заявок на покупку)
@@ -614,7 +624,7 @@ class CRUDOrder(CRUDOrderBase):
             )
 
     async def _process_buy_order(self, user_id: str, ticker: str, qty: int,
-                               price: int = None, session: AsyncSession = None) -> Order:
+                                 price: int = None, session: AsyncSession = None) -> Order:
         """
         Обработка заявки на покупку
 
@@ -630,6 +640,11 @@ class CRUDOrder(CRUDOrderBase):
         """
         # Определяем тип заявки (лимитная или рыночная)
         is_market_order = price is None
+
+        # if is_market_order:
+        #     return await order_crud_v2.buy_market(user_id, ticker, qty, session)
+        # else:
+        #     return await order_crud_v2.buy_limit(user_id, ticker, qty, price, session)
 
         if is_market_order:
             # Рыночная заявка - проверяем наличие предложения

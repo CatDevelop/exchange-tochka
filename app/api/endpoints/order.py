@@ -48,7 +48,8 @@ async def create_order(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Внутренняя ошибка сервера: {str(e)}')
+        # raise e
+        raise HTTPException(status_code=500, detail=f'Внутренняя ошибка сервера 1: {str(e)}')
 
 
 @router.delete(
@@ -84,7 +85,7 @@ async def cancel_order(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Внутренняя ошибка сервера: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'Внутренняя ошибка сервера 2: {str(e)}')
 
 
 @router.get(
@@ -126,7 +127,7 @@ async def get_all_orders(
 
         return orders
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера 3: {str(e)}")
 
 
 @router.get(
@@ -164,4 +165,4 @@ async def get_order_by_id(
             filled=order.filled or 0
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера 4: {str(e)}")

@@ -57,10 +57,11 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as async_session:
         try:
             yield async_session
-            # Явно закрываем соединение после использования
-            await async_session.close()
+            await async_session.commit()
         except Exception as e:
             # Если произошла ошибка, делаем откат и закрываем соединение
             await async_session.rollback()
-            await async_session.close()
             raise e
+        finally:
+            # Явно закрываем соединение после использования
+            await async_session.close()

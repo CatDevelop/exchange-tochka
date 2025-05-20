@@ -1,3 +1,4 @@
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 
@@ -23,3 +24,6 @@ get_custom_docs(
     swagger_js_url='/static/docs/swagger-ui-bundle.js',
     swagger_css_url='/static/docs/swagger-ui.css',
 )
+#
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="localhost", port=8001)
