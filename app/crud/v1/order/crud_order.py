@@ -2,9 +2,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, desc, asc
 from datetime import datetime
 
-from app.core.logs.logs import error_logger, error_log
+from app.core.logs.logs import info_logger
 from app.crud.v1.order.base import CRUDOrderBase
-from app.crud.v1.order.crud_order_v2 import order_crud_v2
 from app.crud.v1.order.market_data import get_orderbook
 from app.crud.v1.balance import balance_crud
 from app.models.order import Order, OrderStatus, OrderDirection, OrderBookLevels
@@ -18,6 +17,7 @@ class CRUDOrder(CRUDOrderBase):
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100,
                             levels: OrderBookLevels = OrderBookLevels.ALL, user_id: str = None) -> dict:
         """Получение биржевого стакана - делегируем в специализированный модуль"""
+        info_logger.info("get_orderbook")
         return await get_orderbook(ticker, session, limit, levels, user_id)
 
     async def create_order(self, user_id: str, direction: OrderDirection, ticker: str,
@@ -194,6 +194,7 @@ class CRUDOrder(CRUDOrderBase):
         Returns:
             Созданная заявка
         """
+        info_logger.info("create cancel order")
         order = Order(
             user_id=user_id,
             direction=direction,
@@ -331,6 +332,7 @@ class CRUDOrder(CRUDOrderBase):
         Returns:
             tuple: (исполненное количество, потраченная/полученная сумма)
         """
+        info_logger.info("match orders")
         executed_qty = 0
         total_amount = 0
 
@@ -473,17 +475,20 @@ class CRUDOrder(CRUDOrderBase):
 
         # 2. Определяем тип заявки (лимитная или рыночная)
         is_market_order = price is None
+        price = price or 0
 
         # if is_market_order:
         #     return await order_crud_v2.sell_market(user_id=user_id, ticker=ticker, qty=qty, session=session)
         # else:
         #     return await order_crud_v2.sell_limit(user_id=user_id, ticker=ticker, qty=qty, price=price, session=session)
 
+        info_logger.info("start sell")
         if is_market_order:
+            info_logger.info("start market sell")
             # 3. Рыночная заявка - проверяем наличие спроса (заявок на покупку)
             orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID, user_id=user_id)
             bid_levels = orderbook["bid_levels"]
-
+            info_logger.info(f"bid_levels: {bid_levels}")
             if not bid_levels:
                 # 4. Нет заявок на покупку - отменяем заявку
                 return await self._create_cancelled_order(
@@ -497,56 +502,44 @@ class CRUDOrder(CRUDOrderBase):
 
             # Проверяем, хватит ли заявок на покупку
             total_available_qty = sum(level["qty"] for level in bid_levels)
-
+            info_logger.info(f"total_available_qty: {total_available_qty}")
             if total_available_qty < qty:
-                # Если доступно хоть какое-то количество, исполняем частично
-                if total_available_qty > 0:
-                    # Блокируем тикеры на балансе для доступного количества
-                    await balance_crud.block_assets(
-                        user_id=user_id,
-                        ticker=ticker,
-                        qty=total_available_qty,  # Только доступное количество
-                        async_session=session
-                    )
+                info_logger.info("total_available_qty < qty")
+                return await self._create_cancelled_order(
+                    user_id=user_id,
+                    direction=OrderDirection.SELL,
+                    ticker=ticker,
+                    qty=qty,
+                    price=None,
+                    session=session
+                )
+            else:
+                # Блокируем тикеры на балансе для доступного количества
+                await balance_crud.block_assets(
+                    user_id=user_id,
+                    ticker=ticker,
+                    qty=qty,
+                    async_session=session
+                )
 
-                    # Исполняем заявку на доступное количество
-                    executed_qty, total_received = await self._match_orders(
-                        user_id=user_id,
-                        ticker=ticker,
-                        qty=total_available_qty,  # Только на доступное количество
-                        price_levels=bid_levels,
-                        is_buy=False,  # Продажа
-                        session=session
-                    )
+                # Исполняем заявку на доступное количество
+                executed_qty, total_received = await self._match_orders(
+                    user_id=user_id,
+                    ticker=ticker,
+                    qty=qty,
+                    price_levels=bid_levels,
+                    is_buy=False,  # Продажа
+                    session=session
+                )
 
-                    # Разблокируем и списываем тикеры
+                if executed_qty != qty:
+                    #TODO правльно не сработает, потому что выше мы уже начислили деньги
                     await balance_crud.unblock_assets(
                         user_id=user_id,
                         ticker=ticker,
                         qty=total_available_qty,
                         async_session=session
                     )
-
-                    await balance_crud.withdraw(
-                        user_id=user_id,
-                        ticker=ticker,
-                        amount=total_available_qty,
-                        async_session=session
-                    )
-
-                    # Создаем частично исполненную заявку
-                    return await self._create_order(
-                        user_id=user_id,
-                        direction=OrderDirection.SELL,
-                        ticker=ticker,
-                        qty=qty,
-                        price=None,  # Рыночная заявка
-                        status=OrderStatus.PARTIALLY_EXECUTED,
-                        filled=executed_qty,
-                        session=session
-                    )
-                else:
-                    # Если совсем нет заявок - отменяем
                     return await self._create_cancelled_order(
                         user_id=user_id,
                         direction=OrderDirection.SELL,
@@ -555,7 +548,34 @@ class CRUDOrder(CRUDOrderBase):
                         price=None,
                         session=session
                     )
+
+                # Разблокируем и списываем тикеры
+                await balance_crud.unblock_assets(
+                    user_id=user_id,
+                    ticker=ticker,
+                    qty=executed_qty,
+                    async_session=session
+                )
+
+                await balance_crud.withdraw(
+                    user_id=user_id,
+                    ticker=ticker,
+                    amount=executed_qty,
+                    async_session=session
+                )
+
+                return await self._create_order(
+                    user_id=user_id,
+                    direction=OrderDirection.SELL,
+                    ticker=ticker,
+                    qty=qty,
+                    price=None,
+                    status=OrderStatus.EXECUTED,
+                    filled=executed_qty,
+                    session=session
+                )
         else:
+            info_logger.info("total_available_qty >= qty")
             # Лимитная заявка
             # 4. Блокируем тикеры
             await balance_crud.block_assets(
@@ -567,7 +587,9 @@ class CRUDOrder(CRUDOrderBase):
 
             # 5-6. Сопоставляем данные
             orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID, user_id=user_id)
-
+            info_logger.info(f"orderbook: {orderbook.items()}")
+            info_logger.info(f"orderbook bid_levels: {orderbook["bid_levels"]}")
+            info_logger.info(f"orderbook bid_levels price: {orderbook["bid_levels"][0]["price"]}")
             # Для продажи ищем заявки на покупку с ценой >= нашей цены (сортируем по убыванию цены)
             bid_levels = [level for level in orderbook["bid_levels"] if level["price"] >= price]
 
@@ -579,6 +601,7 @@ class CRUDOrder(CRUDOrderBase):
 
             # Определяем максимальное количество, которое можно исполнить сразу
             max_executable_qty = min(qty, total_available_qty)
+
 
             # Исполняем подходящие заявки в пределах доступного количества
             executed_qty, total_received = await self._match_orders(
@@ -640,6 +663,7 @@ class CRUDOrder(CRUDOrderBase):
         """
         # Определяем тип заявки (лимитная или рыночная)
         is_market_order = price is None
+        price = price or 0
 
         # if is_market_order:
         #     return await order_crud_v2.buy_market(user_id, ticker, qty, session)
@@ -681,76 +705,14 @@ class CRUDOrder(CRUDOrderBase):
                     break
 
             if available_qty < qty:
-                # Недостаточно предложения - но не отменяем заявку сразу,
-                # а пытаемся исполнить то, что есть
-                if available_qty > 0:
-                    # Блокируем и выполняем рыночную заявку на доступное количество
-                    partial_required_amount = required_amount  # для имеющегося количества
-
-                    # Проверяем наличие рублей на балансе
-                    available_rub = await balance_crud.get_user_available_balance(
-                        user_id=user_id,
-                        ticker="RUB",
-                        async_session=session
-                    )
-
-                    if available_rub < partial_required_amount:
-                        raise ValueError('Недостаточно RUB на балансе для выполнения заявки')
-
-                    # Блокируем рубли на балансе
-                    await balance_crud.block_funds(
-                        user_id=user_id,
-                        ticker="RUB",
-                        amount=partial_required_amount,
-                        async_session=session
-                    )
-
-                    # Исполняем заявку на доступное количество
-                    executed_qty, spent_amount = await self._match_orders(
-                        user_id=user_id,
-                        ticker=ticker,
-                        qty=available_qty,  # Ограничиваем доступным количеством
-                        price_levels=sorted_ask_levels,
-                        is_buy=True,  # Покупка
-                        session=session
-                    )
-
-                    # Разблокируем рубли и списываем потраченные
-                    await balance_crud.unblock_funds(
-                        user_id=user_id,
-                        ticker="RUB",
-                        amount=partial_required_amount,
-                        async_session=session
-                    )
-
-                    await balance_crud.withdraw(
-                        user_id=user_id,
-                        ticker="RUB",
-                        amount=spent_amount,
-                        async_session=session
-                    )
-
-                    # Создаем частично исполненную заявку
-                    return await self._create_order(
-                        user_id=user_id,
-                        direction=OrderDirection.BUY,
-                        ticker=ticker,
-                        qty=qty,
-                        price=None,  # Рыночная заявка
-                        status=OrderStatus.PARTIALLY_EXECUTED,
-                        filled=executed_qty,
-                        session=session
-                    )
-                else:
-                    # Если вообще нет доступных тикеров - отменяем заявку
-                    return await self._create_cancelled_order(
-                        user_id=user_id,
-                        direction=OrderDirection.BUY,
-                        ticker=ticker,
-                        qty=qty,
-                        price=None,
-                        session=session
-                    )
+                return await self._create_cancelled_order(
+                    user_id=user_id,
+                    direction=OrderDirection.BUY,
+                    ticker=ticker,
+                    qty=qty,
+                    price=None,
+                    session=session
+                )
 
             # Для полного исполнения рыночного ордера, когда в стакане достаточно заявок на продажу
 
@@ -781,6 +743,22 @@ class CRUDOrder(CRUDOrderBase):
                 is_buy=True,
                 session=session
             )
+
+            if executed_qty != qty:
+                await balance_crud.unblock_funds(
+                    user_id=user_id,
+                    ticker="RUB",
+                    amount=required_amount,
+                    async_session=session
+                )
+                return await self._create_cancelled_order(
+                    user_id=user_id,
+                    direction=OrderDirection.BUY,
+                    ticker=ticker,
+                    qty=qty,
+                    price=None,
+                    session=session
+                )
 
             # Разблокируем рубли и списываем потраченные
             await balance_crud.unblock_funds(

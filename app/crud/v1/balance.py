@@ -5,7 +5,7 @@ from sqlalchemy import and_, select, update, or_
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.logs.logs import error_log
+from app.core.logs.logs import error_log, info_logger
 from app.crud.base import CRUDBase
 from app.models.balance import Balance
 
@@ -241,6 +241,7 @@ class CRUDBalance(CRUDBase[Balance]):
             qty: int,
             async_session: AsyncSession,
     ) -> Balance:
+        info_logger.info("block_assets")
         """Блокировка активов для ордера на продажу"""
         return await self.block_funds(user_id, ticker, qty, async_session)
 
