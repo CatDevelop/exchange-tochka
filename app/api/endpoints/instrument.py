@@ -19,5 +19,5 @@ async def list_instruments(session: AsyncSession = Depends(get_async_session)):
     try:
         instruments = await instrument_crud.get_all(session)
         return instruments
-    except Exception:
-        raise HTTPException(status_code=500, detail='Internal server error')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера list_instruments: {str(e)}")

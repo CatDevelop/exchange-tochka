@@ -32,8 +32,8 @@ async def add_instrument(
         raise HTTPException(status_code=409, detail=str(e))
     except HTTPException as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail='Internal server error')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
 
 
 @router.delete(
@@ -56,5 +56,5 @@ async def delete_instrument(
         raise HTTPException(status_code=404, detail=str(e))
     except HTTPException as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail='Internal server error')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")

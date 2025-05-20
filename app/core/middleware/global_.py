@@ -74,9 +74,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         async for chunk in response.body_iterator:
             response_body += chunk
 
-        if response.status_code != 200 and response.status_code != 201:
-            trace_error_logger(f'Request body: {body}')
-            trace_error_logger(f'Response body: {response_body.decode()}')
+        # if response.status_code != 200 and response.status_code != 201:
+        trace_info_logger(f'Request body: {body}')
+        trace_info_logger(f'Response body: {response_body.decode()}')
 
         return Response(
             content=response_body,

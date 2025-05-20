@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth.current_user import is_user_admin
@@ -34,5 +34,8 @@ async def delete_user(
         user_id: UUID,
         session: AsyncSession = Depends(get_async_session),
 ):
-    deleted_user = await user_crud.remove(user_id, session)
-    return User.model_validate(deleted_user)
+    try:
+        deleted_user = await user_crud.remove(user_id, session)
+        return User.model_validate(deleted_user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера delete_user: {str(e)}")

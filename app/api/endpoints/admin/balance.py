@@ -43,7 +43,7 @@ async def get_balances(
         )
         return balances
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера get_balances: {str(e)}")
 
 
 @router.post(
@@ -67,8 +67,8 @@ async def deposit_to_balance(
         return OkResponse()
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail='Internal server error')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера deposit_to_balance: {str(e)}")
 
 
 @router.post(
@@ -96,5 +96,5 @@ async def withdraw_from_balance(
         return OkResponse()
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail='Internal server error')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера withdraw_from_balance: {str(e)}")

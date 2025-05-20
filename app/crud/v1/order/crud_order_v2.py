@@ -665,7 +665,6 @@ class CRUDOrderV2(CRUDOrderBase):
         session.add(order)
         await session.flush()
         await session.commit()
-        error_logger.error(f"orderId 2: {str(order.id)}")
         return order
 
 

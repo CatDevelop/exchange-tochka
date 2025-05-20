@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth.current_user import get_current_user
@@ -14,8 +14,11 @@ async def register_user(
     body: NewUser,
     session: AsyncSession = Depends(get_async_session),
 ) -> User:
-    user = await user_crud.add_user(body.name, session)
-    return User.model_validate(user)
+    try:
+        user = await user_crud.add_user(body.name, session)
+        return User.model_validate(user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера register_user: {str(e)}")
 
 
 @router.get(
@@ -24,5 +27,8 @@ async def register_user(
 async def get_profile_user(
     current_user: AsyncSession = Depends(get_current_user),
 ) -> User:
-    user = User.model_validate(current_user)
-    return user
+    try:
+        user = User.model_validate(current_user)
+        return user
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера get_profile_user: {str(e)}")
