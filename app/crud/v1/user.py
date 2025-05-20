@@ -32,7 +32,7 @@ class CRUDUser(CRUDBase[User]):
 
     async def remove(self, user_id: int, async_session: AsyncSession | None = None):
         user = await self.get_by_id(user_id, async_session)
-        crud_order.order_crud.cancel_user_orders(user_id, async_session)
+        await crud_order.order_crud.cancel_user_orders(user_id, async_session)
         if not user or user.is_deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
