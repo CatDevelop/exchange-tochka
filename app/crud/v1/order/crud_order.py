@@ -587,9 +587,6 @@ class CRUDOrder(CRUDOrderBase):
 
             # 5-6. Сопоставляем данные
             orderbook = await self.get_orderbook(ticker=ticker, session=session, levels=OrderBookLevels.BID, user_id=user_id)
-            info_logger.info(f"orderbook: {orderbook.items()}")
-            info_logger.info(f"orderbook bid_levels: {orderbook["bid_levels"]}")
-            info_logger.info(f"orderbook bid_levels price: {orderbook["bid_levels"][0]["price"]}")
             # Для продажи ищем заявки на покупку с ценой >= нашей цены (сортируем по убыванию цены)
             bid_levels = [level for level in orderbook["bid_levels"] if level["price"] >= price]
 
