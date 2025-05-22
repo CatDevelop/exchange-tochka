@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Path, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_session
+from app.core.logs.logs import info_logger
 from app.crud.v1.order import order_crud
 from app.crud.v1.transaction import transaction_crud
 from app.models.order import OrderBookLevels
@@ -30,6 +31,7 @@ async def get_orderbook(
         orderbook_data = await order_crud.get_orderbook(
             ticker=ticker, session=session, limit=limit, levels=OrderBookLevels.ALL
         )
+        info_logger.info(orderbook_data)
 
         return OrderbookResponse(
             bid_levels=orderbook_data['bid_levels'], ask_levels=orderbook_data['ask_levels']

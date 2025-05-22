@@ -17,7 +17,6 @@ class CRUDOrder(CRUDOrderBase):
     async def get_orderbook(self, ticker: str, session: AsyncSession, limit: int = 100,
                             levels: OrderBookLevels = OrderBookLevels.ALL, user_id: str = None) -> dict:
         """Получение биржевого стакана - делегируем в специализированный модуль"""
-        info_logger.info("get_orderbook")
         return await get_orderbook(ticker, session, limit, levels, user_id)
 
     async def create_order(self, user_id: str, direction: OrderDirection, ticker: str,
